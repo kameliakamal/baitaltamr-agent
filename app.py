@@ -88,6 +88,11 @@ def init_db():
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                 """)
+                # أعمدة أضيفت لاحقاً (سعر المنتجات/التوصيل منفصلين + سبب الرفض) —
+                # IF NOT EXISTS يخليها تنضاف بأمان حتى لو الجدول موجود من نسخة أقدم
+                cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_price BIGINT DEFAULT 0")
+                cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_price BIGINT DEFAULT 0")
+                cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS reject_reason TEXT")
     finally:
         conn.close()
 
@@ -118,24 +123,33 @@ def create_order(order_id, order_data, customer_number, status="بانتظار �
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO orders (order_id, customer_number, status, items, address, total)
-                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    """INSERT INTO orders (order_id, customer_number, status, items, address, total, product_price, delivery_price)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     (order_id, customer_number, status,
                      order_data.get("items", ""), order_data.get("address", ""),
-                     order_data.get("total", 0)),
+                     order_data.get("total", 0), order_data.get("product_price", 0),
+                     order_data.get("delivery_price", 0)),
                 )
     finally:
         conn.close()
 
 
 def _row_to_order(row):
-    order_id, customer_number, status, items, address, total, created_at = row
+    (order_id, customer_number, status, items, address, total,
+     product_price, delivery_price, reject_reason, created_at) = row
     return order_id, {
-        "data": {"items": items, "address": address, "total": total},
+        "data": {
+            "items": items, "address": address, "total": total,
+            "product_price": product_price, "delivery_price": delivery_price,
+            "reject_reason": reject_reason,
+        },
         "customer_number": customer_number,
         "status": status,
         "created_at": created_at.strftime("%Y-%m-%d %H:%M") if hasattr(created_at, "strftime") else str(created_at),
     }
+
+
+_ORDER_COLUMNS = "order_id, customer_number, status, items, address, total, product_price, delivery_price, reject_reason, created_at"
 
 
 def get_order(order_id):
@@ -145,8 +159,7 @@ def get_order(order_id):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT order_id, customer_number, status, items, address, total, created_at
-                   FROM orders WHERE order_id = %s""",
+                f"SELECT {_ORDER_COLUMNS} FROM orders WHERE order_id = %s",
                 (order_id,),
             )
             row = cur.fetchone()
@@ -158,7 +171,7 @@ def get_order(order_id):
         conn.close()
 
 
-def update_order_status(order_id, new_status, expected_current_status="بانتظار الموافقة"):
+def update_order_status(order_id, new_status, expected_current_status="بانتظار الموافقة", reject_reason=None):
     """يحدّث حالة الطلب فقط لو حالته الحالية مطابقة للمتوقع (يمنع الموافقة/الرفض المزدوج
     حتى لو وصل طلبان بنفس اللحظة). يرجع True لو تم التحديث فعلاً."""
     if not DATABASE_URL:
@@ -166,15 +179,17 @@ def update_order_status(order_id, new_status, expected_current_status="بانت�
         if not order or order["status"] != expected_current_status:
             return False
         order["status"] = new_status
+        if reject_reason:
+            order["data"]["reject_reason"] = reject_reason
         return True
     conn = get_db_connection()
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """UPDATE orders SET status = %s, updated_at = now()
+                    """UPDATE orders SET status = %s, reject_reason = COALESCE(%s, reject_reason), updated_at = now()
                        WHERE order_id = %s AND status = %s""",
-                    (new_status, order_id, expected_current_status),
+                    (new_status, reject_reason, order_id, expected_current_status),
                 )
                 return cur.rowcount > 0
     finally:
@@ -188,10 +203,7 @@ def list_orders():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """SELECT order_id, customer_number, status, items, address, total, created_at
-                   FROM orders ORDER BY created_at DESC"""
-            )
+            cur.execute(f"SELECT {_ORDER_COLUMNS} FROM orders ORDER BY created_at DESC")
             return [_row_to_order(row) for row in cur.fetchall()]
     finally:
         conn.close()
@@ -241,6 +253,14 @@ def get_prices_text(force_refresh=False):
         return "تعذر تحميل الأسعار حالياً — أخبر الزبون بالتواصل لاحقاً."
 
 
+def format_money(amount):
+    return f"{amount:,} دينار"
+
+
+def format_delivery(amount):
+    return "توصيل مجاني 🚚" if not amount else f"{amount:,} دينار توصيل"
+
+
 def build_discount_text():
     if not DISCOUNT_TIERS:
         return "لا توجد سياسة خصومات حالياً."
@@ -266,13 +286,14 @@ def build_system_prompt():
 ## سياسة الخصومات (حدود صارمة، لا تتجاوزها أبداً):
 {build_discount_text()}
 
-## عند اكتمال تفاصيل الطلب (منتجات + كمية + عنوان + السعر النهائي):
+## عند اكتمال تفاصيل الطلب (منتجات + كمية كل منتج + عنوان + سعر التوصيل):
+لازم تجمع من محادثة الزبون: كل منتج وكميته، سعر المنتجات، سعر التوصيل (أو 0 لو توصيل مجاني/استلام من المحل)، والعنوان الكامل. المجموع النهائي = سعر المنتجات + سعر التوصيل بالضبط.
 لا تؤكد الطلب نهائياً بنفسك — كل طلب يحتاج موافقة الإدارة أولاً. استخدم بالضبط هذي الصيغة:
 
 [ORDER_PENDING]
-{{"items": "وصف مختصر للمنتجات والكميات", "total": الرقم_بدون_فواصل, "address": "العنوان اللي ذكره الزبون"}}
+{{"items": "وصف كل منتج وكميته، مثال: تمر خستاوي 3 كيلو، تمر مجدول 2 كيلو", "product_price": سعر_المنتجات_بدون_فواصل, "delivery_price": سعر_التوصيل_بدون_فواصل_أو_0, "total": سعر_المنتجات_زائد_التوصيل, "address": "العنوان اللي ذكره الزبون"}}
 [/ORDER_PENDING]
-تم استلام طلبك! راح تتأكد لك من الإدارة خلال دقائق ونرجعلك فوراً 🙏
+تم استلام طلبك! نشكرك على تواصلك معنا 🙏 راح تتأكد لك من الإدارة خلال دقائق ونرجعلك فوراً.
 
 ## عند الحاجة لتحويل الزبون لإنسان (خصم يتجاوز الحد، شكوى، سؤال خارج القائمة):
 استخدم بالضبط هذي الصيغة:
@@ -355,9 +376,11 @@ def notify_owner_new_order(order_id, order_data, customer_number):
         f"الزبون: {customer_number}\n"
         f"التفاصيل: {order_data.get('items', '-')}\n"
         f"العنوان: {order_data.get('address', '-')}\n"
-        f"المجموع: {order_data.get('total', 0):,} دينار\n\n"
+        f"سعر المنتجات: {format_money(order_data.get('product_price', 0))}\n"
+        f"{format_delivery(order_data.get('delivery_price', 0))}\n"
+        f"المجموع النهائي: {format_money(order_data.get('total', 0))}\n\n"
         f"للموافقة رد بـ: قبول {order_id}\n"
-        f"للرفض رد بـ: رفض {order_id}"
+        f"للرفض رد بـ: رفض {order_id} [سبب الرفض اختياري]"
     )
     send_whatsapp_message(OWNER_PHONE, text)
     log_order_to_sheet(order_id, order_data, customer_number, status="بانتظار الموافقة")
@@ -402,30 +425,42 @@ def extract_escalate_block(reply_text):
 # ============================================================
 # إضافة 2: التحقق من موافقة/رفض صاحب البزنس على الطلب
 # ============================================================
-def resolve_order(order_id, action, notify_owner=None):
+def resolve_order(order_id, action, notify_owner=None, reject_reason=None):
     """action: 'قبول' أو 'رفض'. يرجع (نجح: bool, رسالة نصية للعرض)."""
     order = get_order(order_id)
     if not order:
         return False, f"ما لقيت طلب بالرقم {order_id} — تأكد من الرقم."
 
     new_status = "مقبول" if action == "قبول" else "مرفوض"
-    updated = update_order_status(order_id, new_status, expected_current_status="بانتظار الموافقة")
+    updated = update_order_status(
+        order_id, new_status, expected_current_status="بانتظار الموافقة",
+        reject_reason=reject_reason if action != "قبول" else None,
+    )
     if not updated:
         current = get_order(order_id)
         current_status = current["status"] if current else order["status"]
         return False, f"الطلب {order_id} تم التعامل معه مسبقاً (الحالة الحالية: {current_status})."
 
     customer_number = order["customer_number"]
+    data = order["data"]
     if action == "قبول":
-        send_whatsapp_message(
-            customer_number,
-            f"تم تأكيد طلبك رقم {order_id} ✅\nالمجموع: {order['data'].get('total', 0):,} دينار\nراح نوصلك بأقرب وقت، شكراً لثقتك!"
+        summary = (
+            f"شكراً لتواصلك معنا! تم تأكيد طلبك رقم {order_id} ✅\n\n"
+            f"التفاصيل: {data.get('items', '-')}\n"
+            f"العنوان: {data.get('address', '-')}\n"
+            f"سعر المنتجات: {format_money(data.get('product_price', 0))}\n"
+            f"{format_delivery(data.get('delivery_price', 0))}\n"
+            f"المجموع النهائي: {format_money(data.get('total', 0))}\n\n"
+            f"راح نوصلك بأقرب وقت، ونشكرك على ثقتك فينا 🙏"
         )
+        send_whatsapp_message(customer_number, summary)
         result_text = f"تم إعلام الزبون بقبول الطلب {order_id} ✅"
     else:
+        reason_line = f"\nالسبب: {reject_reason}\n" if reject_reason else "\n"
         send_whatsapp_message(
             customer_number,
-            f"نعتذر، ما نقدر ننفذ طلبك رقم {order_id} حالياً 🙏 تواصل معنا لمعرفة السبب أو لتعديل الطلب."
+            f"نشكرك على تواصلك معنا 🙏 نعتذر منك، ما نقدر ننفذ طلبك رقم {order_id} حالياً.{reason_line}"
+            f"يسعدنا خدمتك بطلب آخر أو نساعدك بأي تعديل، ونتمنى نشوفك قريباً."
         )
         result_text = f"تم إعلام الزبون برفض الطلب {order_id}."
 
@@ -436,12 +471,14 @@ def resolve_order(order_id, action, notify_owner=None):
 
 
 def handle_owner_reply(text, owner_number):
-    match = re.match(r"^(قبول|رفض)\s+(\S+)", text.strip())
+    # صيغة الرفض تقبل سبب اختياري بعد رقم الطلب: "رفض تمر-XXXXX المنتج غير متوفر حالياً"
+    match = re.match(r"^(قبول|رفض)\s+(\S+)(?:\s+(.*))?$", text.strip(), re.DOTALL)
     if not match:
         return False  # مو رسالة موافقة/رفض، تجاهل
 
-    action, order_id = match.group(1), match.group(2)
-    _, message = resolve_order(order_id, action)
+    action, order_id, reason = match.group(1), match.group(2), match.group(3)
+    reason = reason.strip() if reason else None
+    _, message = resolve_order(order_id, action, reject_reason=reason)
     send_whatsapp_message(owner_number, message)
     return True
 
@@ -601,6 +638,8 @@ ORDERS_PAGE_TEMPLATE = """
   .badge.accepted { background:#dcfce7; color:#166534; }
   .badge.rejected { background:#fee2e2; color:#991b1b; }
   form.inline { display:inline; }
+  form.reject-form { display:inline-flex; align-items:center; gap:4px; }
+  .reason-input { border:1px solid #e7e5e4; border-radius:6px; padding:5px 8px; font-size:.8rem; width:120px; }
   button { border:none; border-radius:6px; padding:6px 12px; font-size:.8rem; cursor:pointer; margin-inline-start:4px; }
   button.accept { background:#16a34a; color:#fff; }
   button.reject { background:#dc2626; color:#fff; }
@@ -622,7 +661,7 @@ ORDERS_PAGE_TEMPLATE = """
     <h2>بانتظار الموافقة</h2>
     {% if pending %}
     <table>
-      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>العنوان</th><th>المجموع</th><th>إجراء</th></tr>
+      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>العنوان</th><th>سعر المنتجات</th><th>التوصيل</th><th>المجموع</th><th>إجراء</th></tr>
       {% for oid, o in pending %}
       <tr>
         <td>{{ o.created_at or '-' }}</td>
@@ -630,10 +669,15 @@ ORDERS_PAGE_TEMPLATE = """
         <td dir="ltr">{{ o.customer_number }}</td>
         <td>{{ o.data.get('items','-') }}</td>
         <td>{{ o.data.get('address','-') }}</td>
-        <td>{{ "{:,}".format(o.data.get('total',0)) }} د.ع</td>
+        <td>{{ format_money(o.data.get('product_price', 0)) }}</td>
+        <td>{{ format_delivery(o.data.get('delivery_price', 0)) }}</td>
+        <td><b>{{ format_money(o.data.get('total',0)) }}</b></td>
         <td>
           <form class="inline" method="post" action="/admin/orders/{{ oid }}/accept"><button class="accept">قبول</button></form>
-          <form class="inline" method="post" action="/admin/orders/{{ oid }}/reject"><button class="reject">رفض</button></form>
+          <form class="inline reject-form" method="post" action="/admin/orders/{{ oid }}/reject">
+            <input type="text" name="reason" placeholder="سبب الرفض (اختياري)" class="reason-input">
+            <button class="reject">رفض</button>
+          </form>
         </td>
       </tr>
       {% endfor %}
@@ -647,17 +691,21 @@ ORDERS_PAGE_TEMPLATE = """
     <h2>سجل الطلبات المنتهية (هذه الجلسة)</h2>
     {% if accepted or rejected %}
     <table>
-      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>المجموع</th><th>الحالة</th></tr>
+      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>سعر المنتجات</th><th>التوصيل</th><th>المجموع</th><th>الحالة</th></tr>
       {% for oid, o in (accepted + rejected) %}
       <tr>
         <td>{{ o.created_at or '-' }}</td>
         <td>{{ oid }}</td>
         <td dir="ltr">{{ o.customer_number }}</td>
         <td>{{ o.data.get('items','-') }}</td>
-        <td>{{ "{:,}".format(o.data.get('total',0)) }} د.ع</td>
+        <td>{{ format_money(o.data.get('product_price', 0)) }}</td>
+        <td>{{ format_delivery(o.data.get('delivery_price', 0)) }}</td>
+        <td><b>{{ format_money(o.data.get('total',0)) }}</b></td>
         <td>
           {% if o.status == 'مقبول' %}<span class="badge accepted">مقبول</span>
-          {% else %}<span class="badge rejected">مرفوض</span>{% endif %}
+          {% else %}<span class="badge rejected">مرفوض</span>
+            {% if o.data.get('reject_reason') %}<div class="sub" style="margin:4px 0 0">{{ o.data.get('reject_reason') }}</div>{% endif %}
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -683,6 +731,7 @@ def admin_orders_page():
         business_name=BUSINESS_NAME,
         now=time.strftime("%Y-%m-%d %H:%M:%S"),
         pending=pending, accepted=accepted, rejected=rejected,
+        format_money=format_money, format_delivery=format_delivery,
     )
 
 
@@ -691,7 +740,12 @@ def admin_orders_page():
 def admin_orders_action(order_id, action):
     if action not in ("accept", "reject"):
         return "إجراء غير معروف", 400
-    resolve_order(order_id, "قبول" if action == "accept" else "رفض", notify_owner=OWNER_PHONE or None)
+    reason = request.form.get("reason", "").strip() or None
+    resolve_order(
+        order_id, "قبول" if action == "accept" else "رفض",
+        notify_owner=OWNER_PHONE or None,
+        reject_reason=reason if action == "reject" else None,
+    )
     return Response(status=302, headers={"Location": "/admin/orders"})
 
 
