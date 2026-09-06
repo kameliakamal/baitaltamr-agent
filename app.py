@@ -484,6 +484,49 @@ def handle_owner_reply(text, owner_number):
 
 
 # ============================================================
+# لوحة تحكم الزبون المصغّرة عبر واتساب: "طلباتي" — بدون أي حساب/تسجيل دخول
+# (رقم واتساب الزبون هو هويته أصلاً، فلا داعي لباسورد أو موقع منفصل)
+# ============================================================
+_ORDER_STATUS_KEYWORDS = (
+    "طلباتي", "طلبي", "طلبيتي", "وين طلبي", "وين طلبيتي",
+    "حالة طلبي", "حالة الطلب", "تتبع طلبي", "متابعة طلبي",
+)
+
+_STATUS_LABELS = {
+    "بانتظار الموافقة": "⏳ بانتظار المراجعة",
+    "مقبول": "✅ مؤكد",
+    "مرفوض": "❌ مرفوض",
+}
+
+
+def is_order_status_query(text):
+    normalized = text.strip()
+    return any(kw in normalized for kw in _ORDER_STATUS_KEYWORDS)
+
+
+def build_customer_orders_summary(customer_number):
+    """يرجع نص يلخص آخر 5 طلبات لهذا الزبون (الأحدث أولاً)، أو None إذا ما عنده طلبات."""
+    orders = [(oid, o) for oid, o in list_orders() if o["customer_number"] == customer_number]
+    if not orders:
+        return None
+
+    blocks = []
+    for order_id, order in orders[:5]:
+        data = order["data"]
+        status_line = _STATUS_LABELS.get(order["status"], order["status"])
+        block = (
+            f"🔹 طلب {order_id} — {status_line}\n"
+            f"   {data.get('items', '-')}\n"
+            f"   المجموع: {format_money(data.get('total', 0))}"
+        )
+        if order["status"] == "مرفوض" and data.get("reject_reason"):
+            block += f"\n   السبب: {data.get('reject_reason')}"
+        blocks.append(block)
+
+    return "📋 آخر طلباتك:\n\n" + "\n\n".join(blocks)
+
+
+# ============================================================
 # إضافة 3: حماية من الرسائل المكررة + إضافة 4: تحديد معدل الاستخدام
 # ============================================================
 def is_duplicate_message(message_id):
@@ -562,6 +605,18 @@ def receive_message():
         if is_rate_limited(from_number):
             send_whatsapp_message(from_number, "وصلتنا رسائل كثيرة منك بوقت قصير — نرجع لك خلال شوي 🙏")
             return jsonify({"status": "rate_limited"}), 200
+
+        # -- استعلام الزبون عن حالة طلباته (بدون استدعاء الذكاء الاصطناعي) --
+        if is_order_status_query(user_text):
+            summary = build_customer_orders_summary(from_number)
+            if summary:
+                send_whatsapp_message(from_number, summary)
+            else:
+                send_whatsapp_message(
+                    from_number,
+                    "ما عندك أي طلبات مسجلة عندنا لحد الآن 🙏\nراسلنا بالي تحتاجه ونساعدك بكل سرور!",
+                )
+            return jsonify({"status": "order_status_handled"}), 200
 
         # -- المسار العادي: رد الذكاء الاصطناعي --
         reply = ask_claude(user_text, from_number)
