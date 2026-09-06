@@ -749,6 +749,65 @@ def admin_orders_action(order_id, action):
     return Response(status=302, headers={"Location": "/admin/orders"})
 
 
+# ============================================================
+# أداة مؤقتة: تعبئة/حذف طلبات تجريبية للتأكد من شكل اللوحة
+# (كل الطلبات التجريبية تبدأ بـ "تجربة-" وما ترسل أي رسالة واتساب حقيقية)
+# ============================================================
+_TEST_ORDER_PREFIX = "تجربة-"
+
+_TEST_ORDERS = [
+    ("001", "بانتظار الموافقة", {
+        "items": "تمر خستاوي 3 كيلو، تمر مجدول 2 كيلو",
+        "product_price": 45000, "delivery_price": 5000, "total": 50000,
+        "address": "بغداد - الكرادة",
+    }, "9647800000001", None),
+    ("002", "بانتظار الموافقة", {
+        "items": "تمر برحي 1 كيلو",
+        "product_price": 12000, "delivery_price": 0, "total": 12000,
+        "address": "بغداد - المنصور",
+    }, "9647800000002", None),
+    ("003", "مقبول", {
+        "items": "تمر سكري 5 كيلو",
+        "product_price": 60000, "delivery_price": 7000, "total": 67000,
+        "address": "البصرة - العشار",
+    }, "9647800000003", None),
+    ("004", "مرفوض", {
+        "items": "تمر عنبر 10 كيلو",
+        "product_price": 150000, "delivery_price": 10000, "total": 160000,
+        "address": "أربيل",
+    }, "9647800000004", "الكمية المطلوبة غير متوفرة حالياً بالمخزون"),
+]
+
+
+@app.route("/admin/seed-test-orders", methods=["POST"])
+@require_admin_auth
+def seed_test_orders():
+    for suffix, status, data, customer, reason in _TEST_ORDERS:
+        oid = _TEST_ORDER_PREFIX + suffix
+        create_order(oid, data, customer, status=status)
+        if reason:
+            update_order_status(oid, status, expected_current_status=status, reject_reason=reason)
+    return jsonify({"status": "seeded", "count": len(_TEST_ORDERS)})
+
+
+@app.route("/admin/seed-test-orders", methods=["DELETE"])
+@require_admin_auth
+def delete_test_orders():
+    if not DATABASE_URL:
+        removed = [oid for oid in pending_orders if oid.startswith(_TEST_ORDER_PREFIX)]
+        for oid in removed:
+            del pending_orders[oid]
+        return jsonify({"status": "deleted", "count": len(removed)})
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM orders WHERE order_id LIKE %s", (_TEST_ORDER_PREFIX + "%",))
+                return jsonify({"status": "deleted", "count": cur.rowcount})
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
