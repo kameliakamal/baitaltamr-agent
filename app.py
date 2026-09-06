@@ -4,13 +4,17 @@
 
 import os
 import csv
+import hmac
+import hashlib
 import io
 import json
 import re
 import time
+import uuid
 import requests
 from collections import defaultdict, deque
-from flask import Flask, request, jsonify
+from functools import wraps
+from flask import Flask, request, jsonify, Response, render_template_string
 
 app = Flask(__name__)
 
@@ -20,6 +24,12 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "change-me")
 SHEET_CSV_URL = os.environ.get("SHEET_CSV_URL")
+
+# سر تطبيق Meta (Settings > Basic > App Secret) — لو موجود، يتم التحقق من توقيع كل ويبهوك وارد
+APP_SECRET = os.environ.get("APP_SECRET", "")
+
+# كلمة مرور صفحة إدارة الطلبات /admin/orders — إلزامية لتفعيل الصفحة
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 # رقم صاحب البزنس — يستقبل إشعارات الطلبات ويوافق/يرفض عليها
 OWNER_PHONE = os.environ.get("OWNER_PHONE", "").replace("+", "").strip()
@@ -40,12 +50,18 @@ message_timestamps = defaultdict(list)  # رقم الزبون -> أوقات آخ
 MEMORY_TURNS = 15          # آخر 15 رسالة من الزبون (= 30 عنصر بالتاريخ: سؤال+رد)
 RATE_LIMIT_MAX_MSGS = 25   # أقصى عدد رسائل بالساعة الواحدة لكل زبون
 RATE_LIMIT_WINDOW = 3600   # ثانية (ساعة واحدة)
+PRICES_CACHE_TTL = 180     # ثانية — كم نحتفظ بالأسعار قبل ما نعيد تحميلها من الشيت
+
+_prices_cache = {"text": None, "fetched_at": 0}
 
 
 # ============================================================
-# قراءة الأسعار الحية
+# قراءة الأسعار الحية (مع كاش قصير لتقليل زمن الاستجابة وحمل الشبكة)
 # ============================================================
-def get_prices_text():
+def get_prices_text(force_refresh=False):
+    now = time.time()
+    if not force_refresh and _prices_cache["text"] is not None and (now - _prices_cache["fetched_at"]) < PRICES_CACHE_TTL:
+        return _prices_cache["text"]
     try:
         response = requests.get(SHEET_CSV_URL, timeout=10)
         response.raise_for_status()
@@ -55,9 +71,15 @@ def get_prices_text():
         for row in rows[1:]:
             if len(row) >= 2 and row[0].strip():
                 lines.append(f"- {row[0].strip()} = {row[1].strip()} دينار عراقي")
-        return "\n".join(lines) if lines else "لا توجد أسعار محدثة حالياً."
+        text = "\n".join(lines) if lines else "لا توجد أسعار محدثة حالياً."
+        _prices_cache["text"] = text
+        _prices_cache["fetched_at"] = now
+        return text
     except Exception as e:
         print(f"[خطأ] قراءة الأسعار: {e}")
+        # لو عندنا نسخة قديمة بالكاش نرجعها بدل ما نوقف الرد كلياً
+        if _prices_cache["text"] is not None:
+            return _prices_cache["text"]
         return "تعذر تحميل الأسعار حالياً — أخبر الزبون بالتواصل لاحقاً."
 
 
@@ -159,6 +181,15 @@ def send_whatsapp_message(to_number, message_text):
 # ============================================================
 # إضافة 1: إشعار صاحب البزنس بالطلبات الجديدة + تسجيلها
 # ============================================================
+def generate_order_id():
+    prefix = "".join(ch for ch in BUSINESS_NAME[:2] if not ch.isspace()) or "طل"
+    for _ in range(5):
+        candidate = f"{prefix}-{uuid.uuid4().hex[:5].upper()}"
+        if candidate not in pending_orders:
+            return candidate
+    return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"  # احتياط بعيد الاحتمال
+
+
 def notify_owner_new_order(order_id, order_data, customer_number):
     text = (
         f"📦 طلب جديد بانتظار موافقتك\n\n"
@@ -213,16 +244,13 @@ def extract_escalate_block(reply_text):
 # ============================================================
 # إضافة 2: التحقق من موافقة/رفض صاحب البزنس على الطلب
 # ============================================================
-def handle_owner_reply(text, owner_number):
-    match = re.match(r"^(قبول|رفض)\s+(\S+)", text.strip())
-    if not match:
-        return False  # مو رسالة موافقة/رفض، تجاهل
-
-    action, order_id = match.group(1), match.group(2)
+def resolve_order(order_id, action, notify_owner=None):
+    """action: 'قبول' أو 'رفض'. يرجع (نجح: bool, رسالة نصية للعرض)."""
     order = pending_orders.get(order_id)
     if not order:
-        send_whatsapp_message(owner_number, f"ما لقيت طلب بالرقم {order_id} — تأكد من الرقم.")
-        return True
+        return False, f"ما لقيت طلب بالرقم {order_id} — تأكد من الرقم."
+    if order["status"] != "بانتظار الموافقة":
+        return False, f"الطلب {order_id} تم التعامل معه مسبقاً (الحالة الحالية: {order['status']})."
 
     customer_number = order["customer_number"]
     if action == "قبول":
@@ -231,16 +259,29 @@ def handle_owner_reply(text, owner_number):
             customer_number,
             f"تم تأكيد طلبك رقم {order_id} ✅\nالمجموع: {order['data'].get('total', 0):,} دينار\nراح نوصلك بأقرب وقت، شكراً لثقتك!"
         )
-        send_whatsapp_message(owner_number, f"تم إعلام الزبون بقبول الطلب {order_id} ✅")
+        result_text = f"تم إعلام الزبون بقبول الطلب {order_id} ✅"
     else:
         order["status"] = "مرفوض"
         send_whatsapp_message(
             customer_number,
             f"نعتذر، ما نقدر ننفذ طلبك رقم {order_id} حالياً 🙏 تواصل معنا لمعرفة السبب أو لتعديل الطلب."
         )
-        send_whatsapp_message(owner_number, f"تم إعلام الزبون برفض الطلب {order_id}.")
+        result_text = f"تم إعلام الزبون برفض الطلب {order_id}."
 
+    if notify_owner:
+        send_whatsapp_message(notify_owner, result_text)
     log_order_to_sheet(order_id, order["data"], customer_number, status=order["status"])
+    return True, result_text
+
+
+def handle_owner_reply(text, owner_number):
+    match = re.match(r"^(قبول|رفض)\s+(\S+)", text.strip())
+    if not match:
+        return False  # مو رسالة موافقة/رفض، تجاهل
+
+    action, order_id = match.group(1), match.group(2)
+    _, message = resolve_order(order_id, action)
+    send_whatsapp_message(owner_number, message)
     return True
 
 
@@ -274,8 +315,25 @@ def verify_webhook():
     return "خطأ بالتحقق", 403
 
 
+def verify_meta_signature(request_obj):
+    """يتحقق أن الطلب فعلاً من Meta (وليس من أي طرف يعرف رابط الويبهوك) عبر مقارنة
+    التوقيع X-Hub-Signature-256 مع HMAC-SHA256 لمحتوى الطلب باستخدام App Secret.
+    يعمل فقط لو تم ضبط APP_SECRET — إذا ما كان مضبوط، يسمح بالمرور (سلوك النسخة الأصلية)."""
+    if not APP_SECRET:
+        return True
+    signature = request_obj.headers.get("X-Hub-Signature-256", "")
+    if not signature.startswith("sha256="):
+        return False
+    expected = hmac.new(APP_SECRET.encode(), request_obj.get_data(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature[len("sha256="):], expected)
+
+
 @app.route("/webhook", methods=["POST"])
 def receive_message():
+    if not verify_meta_signature(request):
+        print("[أمان] توقيع ويبهوك غير صالح — تم رفض الطلب")
+        return jsonify({"status": "invalid_signature"}), 403
+
     data = request.get_json()
     from_number = None
     try:
@@ -312,9 +370,12 @@ def receive_message():
 
         order_data, reply = extract_order_block(reply)
         if order_data:
-            order_id = f"{BUSINESS_NAME[:2]}{int(time.time()) % 100000}"
+            order_id = generate_order_id()
             pending_orders[order_id] = {
-                "data": order_data, "customer_number": from_number, "status": "بانتظار الموافقة"
+                "data": order_data,
+                "customer_number": from_number,
+                "status": "بانتظار الموافقة",
+                "created_at": time.strftime("%Y-%m-%d %H:%M"),
             }
             notify_owner_new_order(order_id, order_data, from_number)
 
@@ -340,6 +401,144 @@ def receive_message():
 @app.route("/", methods=["GET"])
 def health_check():
     return f"وكيل {BUSINESS_NAME} يعمل ✅ | طلبات معلّقة: {len(pending_orders)}", 200
+
+
+# ============================================================
+# صفحة إدارة الطلبات — /admin/orders
+# ============================================================
+def require_admin_auth(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not ADMIN_PASSWORD:
+            return "لازم تضبط متغيّر ADMIN_PASSWORD بالسيرفر أولاً لتفعيل هذه الصفحة.", 503
+        auth = request.authorization
+        if not auth or not hmac.compare_digest(auth.password or "", ADMIN_PASSWORD):
+            return Response(
+                "يلزم تسجيل الدخول للوصول لصفحة الطلبات.", 401,
+                {"WWW-Authenticate": 'Basic realm="Orders Dashboard"'},
+            )
+        return view(*args, **kwargs)
+    return wrapped
+
+
+ORDERS_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>طلبات {{ business_name }}</title>
+<meta http-equiv="refresh" content="30">
+<style>
+  body { font-family: -apple-system, Tahoma, Arial, sans-serif; background:#f5f5f4; margin:0; padding:16px; color:#1c1917; }
+  h1 { font-size:1.3rem; margin:0 0 4px; }
+  .sub { color:#78716c; font-size:.85rem; margin-bottom:16px; }
+  .stats { display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+  .stat { background:#fff; border-radius:10px; padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); min-width:100px; text-align:center; }
+  .stat b { display:block; font-size:1.4rem; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.08); margin-bottom:24px; }
+  th, td { padding:10px 12px; text-align:right; font-size:.9rem; border-bottom:1px solid #f0f0ef; vertical-align:top; }
+  th { background:#292524; color:#fff; font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  .badge { padding:3px 9px; border-radius:999px; font-size:.75rem; font-weight:600; white-space:nowrap; }
+  .badge.pending { background:#fef3c7; color:#92400e; }
+  .badge.accepted { background:#dcfce7; color:#166534; }
+  .badge.rejected { background:#fee2e2; color:#991b1b; }
+  form.inline { display:inline; }
+  button { border:none; border-radius:6px; padding:6px 12px; font-size:.8rem; cursor:pointer; margin-inline-start:4px; }
+  button.accept { background:#16a34a; color:#fff; }
+  button.reject { background:#dc2626; color:#fff; }
+  .empty { color:#78716c; padding:20px; text-align:center; }
+  section h2 { font-size:1rem; color:#57534e; margin:0 0 8px; }
+</style>
+</head>
+<body>
+  <h1>📦 طلبات {{ business_name }}</h1>
+  <div class="sub">تحديث تلقائي كل 30 ثانية · آخر تحميل: {{ now }}</div>
+
+  <div class="stats">
+    <div class="stat"><b>{{ pending|length }}</b>بانتظار الموافقة</div>
+    <div class="stat"><b>{{ accepted|length }}</b>مقبولة</div>
+    <div class="stat"><b>{{ rejected|length }}</b>مرفوضة</div>
+  </div>
+
+  <section>
+    <h2>بانتظار الموافقة</h2>
+    {% if pending %}
+    <table>
+      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>العنوان</th><th>المجموع</th><th>إجراء</th></tr>
+      {% for oid, o in pending %}
+      <tr>
+        <td>{{ o.created_at or '-' }}</td>
+        <td>{{ oid }}</td>
+        <td dir="ltr">{{ o.customer_number }}</td>
+        <td>{{ o.data.get('items','-') }}</td>
+        <td>{{ o.data.get('address','-') }}</td>
+        <td>{{ "{:,}".format(o.data.get('total',0)) }} د.ع</td>
+        <td>
+          <form class="inline" method="post" action="/admin/orders/{{ oid }}/accept"><button class="accept">قبول</button></form>
+          <form class="inline" method="post" action="/admin/orders/{{ oid }}/reject"><button class="reject">رفض</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">لا توجد طلبات بانتظار الموافقة حالياً.</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>سجل الطلبات المنتهية (هذه الجلسة)</h2>
+    {% if accepted or rejected %}
+    <table>
+      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>المجموع</th><th>الحالة</th></tr>
+      {% for oid, o in (accepted + rejected) %}
+      <tr>
+        <td>{{ o.created_at or '-' }}</td>
+        <td>{{ oid }}</td>
+        <td dir="ltr">{{ o.customer_number }}</td>
+        <td>{{ o.data.get('items','-') }}</td>
+        <td>{{ "{:,}".format(o.data.get('total',0)) }} د.ع</td>
+        <td>
+          {% if o.status == 'مقبول' %}<span class="badge accepted">مقبول</span>
+          {% else %}<span class="badge rejected">مرفوض</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">لا يوجد سجل بعد.</div>
+    {% endif %}
+  </section>
+</body>
+</html>
+"""
+
+
+@app.route("/admin/orders", methods=["GET"])
+@require_admin_auth
+def admin_orders_page():
+    items = list(pending_orders.items())
+    pending = [(oid, o) for oid, o in items if o["status"] == "بانتظار الموافقة"]
+    accepted = [(oid, o) for oid, o in items if o["status"] == "مقبول"]
+    rejected = [(oid, o) for oid, o in items if o["status"] == "مرفوض"]
+    # الأحدث أولاً
+    pending.reverse(); accepted.reverse(); rejected.reverse()
+    return render_template_string(
+        ORDERS_PAGE_TEMPLATE,
+        business_name=BUSINESS_NAME,
+        now=time.strftime("%Y-%m-%d %H:%M:%S"),
+        pending=pending, accepted=accepted, rejected=rejected,
+    )
+
+
+@app.route("/admin/orders/<order_id>/<action>", methods=["POST"])
+@require_admin_auth
+def admin_orders_action(order_id, action):
+    if action not in ("accept", "reject"):
+        return "إجراء غير معروف", 400
+    resolve_order(order_id, "قبول" if action == "accept" else "رفض", notify_owner=OWNER_PHONE or None)
+    return Response(status=302, headers={"Location": "/admin/orders"})
 
 
 if __name__ == "__main__":
