@@ -37,13 +37,17 @@ OWNER_PHONE = os.environ.get("OWNER_PHONE", "").replace("+", "").strip()
 # رابط اختياري لتسجيل الطلبات بجدول Google Sheet منفصل (Apps Script Web App)
 ORDERS_APPEND_URL = os.environ.get("ORDERS_APPEND_URL", "")
 
+# رابط قاعدة بيانات Postgres — لو موجود، الطلبات تُخزّن فيها بدل الذاكرة المؤقتة
+# (تنجو من إعادة تشغيل السيرفر). لو غير موجود، يرجع نفس سلوك النسخة السابقة (ذاكرة مؤقتة).
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
 # ==== بيانات خاصة بكل عميل ====
 BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "المتجر")
 DISCOUNT_TIERS = json.loads(os.environ.get("DISCOUNT_TIERS", "[]"))
 
 # ==== ذاكرة تشغيلية (تُمسح عند إعادة تشغيل السيرفر) ====
 conversation_memory = {}          # رقم الزبون -> آخر 15 تبادل رسائل
-pending_orders = {}               # order_id -> تفاصيل الطلب وحالته
+pending_orders = {}               # يُستخدم فقط لو DATABASE_URL غير مضبوط (احتياط/تجربة محلية)
 seen_message_ids = deque(maxlen=500)   # لمنع الرد المكرر على نفس الرسالة
 message_timestamps = defaultdict(list)  # رقم الزبون -> أوقات آخر رسائله (لضبط معدل الاستخدام)
 
@@ -53,6 +57,160 @@ RATE_LIMIT_WINDOW = 3600   # ثانية (ساعة واحدة)
 PRICES_CACHE_TTL = 180     # ثانية — كم نحتفظ بالأسعار قبل ما نعيد تحميلها من الشيت
 
 _prices_cache = {"text": None, "fetched_at": 0}
+
+
+# ============================================================
+# قاعدة البيانات (Postgres) — تخزين دائم للطلبات ينجو من إعادة تشغيل السيرفر
+# لو DATABASE_URL غير مضبوط: كل الدوال تحته ترجع لنفس سلوك قاموس pending_orders
+# بالذاكرة (سلوك النسخة الأصلية بالضبط، بدون أي تغيير).
+# ============================================================
+def get_db_connection():
+    import psycopg2  # استيراد كسول: ما نحتاج المكتبة مثبّتة إلا لو DATABASE_URL مضبوط فعلاً
+    return psycopg2.connect(DATABASE_URL)
+
+
+def init_db():
+    if not DATABASE_URL:
+        return
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS orders (
+                        order_id TEXT PRIMARY KEY,
+                        customer_number TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        items TEXT,
+                        address TEXT,
+                        total BIGINT DEFAULT 0,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+    finally:
+        conn.close()
+
+
+def order_exists(order_id):
+    if not DATABASE_URL:
+        return order_id in pending_orders
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM orders WHERE order_id = %s", (order_id,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def create_order(order_id, order_data, customer_number, status="بانتظار الموافقة"):
+    if not DATABASE_URL:
+        pending_orders[order_id] = {
+            "data": order_data,
+            "customer_number": customer_number,
+            "status": status,
+            "created_at": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        return
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO orders (order_id, customer_number, status, items, address, total)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (order_id, customer_number, status,
+                     order_data.get("items", ""), order_data.get("address", ""),
+                     order_data.get("total", 0)),
+                )
+    finally:
+        conn.close()
+
+
+def _row_to_order(row):
+    order_id, customer_number, status, items, address, total, created_at = row
+    return order_id, {
+        "data": {"items": items, "address": address, "total": total},
+        "customer_number": customer_number,
+        "status": status,
+        "created_at": created_at.strftime("%Y-%m-%d %H:%M") if hasattr(created_at, "strftime") else str(created_at),
+    }
+
+
+def get_order(order_id):
+    if not DATABASE_URL:
+        return pending_orders.get(order_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT order_id, customer_number, status, items, address, total, created_at
+                   FROM orders WHERE order_id = %s""",
+                (order_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            _, order = _row_to_order(row)
+            return order
+    finally:
+        conn.close()
+
+
+def update_order_status(order_id, new_status, expected_current_status="بانتظار الموافقة"):
+    """يحدّث حالة الطلب فقط لو حالته الحالية مطابقة للمتوقع (يمنع الموافقة/الرفض المزدوج
+    حتى لو وصل طلبان بنفس اللحظة). يرجع True لو تم التحديث فعلاً."""
+    if not DATABASE_URL:
+        order = pending_orders.get(order_id)
+        if not order or order["status"] != expected_current_status:
+            return False
+        order["status"] = new_status
+        return True
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE orders SET status = %s, updated_at = now()
+                       WHERE order_id = %s AND status = %s""",
+                    (new_status, order_id, expected_current_status),
+                )
+                return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def list_orders():
+    """يرجع لستة (order_id, order) — الأحدث أولاً."""
+    if not DATABASE_URL:
+        return list(reversed(list(pending_orders.items())))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT order_id, customer_number, status, items, address, total, created_at
+                   FROM orders ORDER BY created_at DESC"""
+            )
+            return [_row_to_order(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_pending_orders():
+    if not DATABASE_URL:
+        return sum(1 for o in pending_orders.values() if o["status"] == "بانتظار الموافقة")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM orders WHERE status = %s", ("بانتظار الموافقة",))
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+if DATABASE_URL:
+    init_db()
 
 
 # ============================================================
@@ -185,7 +343,7 @@ def generate_order_id():
     prefix = "".join(ch for ch in BUSINESS_NAME[:2] if not ch.isspace()) or "طل"
     for _ in range(5):
         candidate = f"{prefix}-{uuid.uuid4().hex[:5].upper()}"
-        if candidate not in pending_orders:
+        if not order_exists(candidate):
             return candidate
     return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"  # احتياط بعيد الاحتمال
 
@@ -246,22 +404,25 @@ def extract_escalate_block(reply_text):
 # ============================================================
 def resolve_order(order_id, action, notify_owner=None):
     """action: 'قبول' أو 'رفض'. يرجع (نجح: bool, رسالة نصية للعرض)."""
-    order = pending_orders.get(order_id)
+    order = get_order(order_id)
     if not order:
         return False, f"ما لقيت طلب بالرقم {order_id} — تأكد من الرقم."
-    if order["status"] != "بانتظار الموافقة":
-        return False, f"الطلب {order_id} تم التعامل معه مسبقاً (الحالة الحالية: {order['status']})."
+
+    new_status = "مقبول" if action == "قبول" else "مرفوض"
+    updated = update_order_status(order_id, new_status, expected_current_status="بانتظار الموافقة")
+    if not updated:
+        current = get_order(order_id)
+        current_status = current["status"] if current else order["status"]
+        return False, f"الطلب {order_id} تم التعامل معه مسبقاً (الحالة الحالية: {current_status})."
 
     customer_number = order["customer_number"]
     if action == "قبول":
-        order["status"] = "مقبول"
         send_whatsapp_message(
             customer_number,
             f"تم تأكيد طلبك رقم {order_id} ✅\nالمجموع: {order['data'].get('total', 0):,} دينار\nراح نوصلك بأقرب وقت، شكراً لثقتك!"
         )
         result_text = f"تم إعلام الزبون بقبول الطلب {order_id} ✅"
     else:
-        order["status"] = "مرفوض"
         send_whatsapp_message(
             customer_number,
             f"نعتذر، ما نقدر ننفذ طلبك رقم {order_id} حالياً 🙏 تواصل معنا لمعرفة السبب أو لتعديل الطلب."
@@ -270,7 +431,7 @@ def resolve_order(order_id, action, notify_owner=None):
 
     if notify_owner:
         send_whatsapp_message(notify_owner, result_text)
-    log_order_to_sheet(order_id, order["data"], customer_number, status=order["status"])
+    log_order_to_sheet(order_id, order["data"], customer_number, status=new_status)
     return True, result_text
 
 
@@ -371,12 +532,7 @@ def receive_message():
         order_data, reply = extract_order_block(reply)
         if order_data:
             order_id = generate_order_id()
-            pending_orders[order_id] = {
-                "data": order_data,
-                "customer_number": from_number,
-                "status": "بانتظار الموافقة",
-                "created_at": time.strftime("%Y-%m-%d %H:%M"),
-            }
+            create_order(order_id, order_data, from_number)
             notify_owner_new_order(order_id, order_data, from_number)
 
         reason, reply = extract_escalate_block(reply)
@@ -400,7 +556,7 @@ def receive_message():
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return f"وكيل {BUSINESS_NAME} يعمل ✅ | طلبات معلّقة: {len(pending_orders)}", 200
+    return f"وكيل {BUSINESS_NAME} يعمل ✅ | طلبات معلّقة: {count_pending_orders()}", 200
 
 
 # ============================================================
@@ -518,12 +674,10 @@ ORDERS_PAGE_TEMPLATE = """
 @app.route("/admin/orders", methods=["GET"])
 @require_admin_auth
 def admin_orders_page():
-    items = list(pending_orders.items())
+    items = list_orders()  # الأحدث أولاً
     pending = [(oid, o) for oid, o in items if o["status"] == "بانتظار الموافقة"]
     accepted = [(oid, o) for oid, o in items if o["status"] == "مقبول"]
     rejected = [(oid, o) for oid, o in items if o["status"] == "مرفوض"]
-    # الأحدث أولاً
-    pending.reverse(); accepted.reverse(); rejected.reverse()
     return render_template_string(
         ORDERS_PAGE_TEMPLATE,
         business_name=BUSINESS_NAME,
