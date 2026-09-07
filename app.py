@@ -49,11 +49,24 @@ DISCOUNT_TIERS = json.loads(os.environ.get("DISCOUNT_TIERS", "[]"))
 # مضبوط افتراضياً على رابط Render الحالي؛ لو تغيّر الدومين مستقبلاً يكفي تغيير هذا المتغير بالإعدادات.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://baitaltamr-agent.onrender.com").rstrip("/")
 
+# رسالة الترحيب الثابتة — تُرسل تلقائياً لأول رسالة توصل من أي زبون جديد (مرة وحدة لكل رقم).
+# قابلة للتعديل من إعدادات Render (WELCOME_MESSAGE) بدون أي تعديل بالكود — مفيد لو انسخّت
+# هذا القالب لعميل ثاني بصياغة ترحيب مختلفة.
+WELCOME_MESSAGE = os.environ.get(
+    "WELCOME_MESSAGE",
+    "أهلاً وسهلاً في بيت التمر 🌹\n"
+    "الرجاء تزويدنا برقم الهاتف والعنوان\n"
+    "وسيتم الرد في أسرع وقت ممكن 🌹\n"
+    "شكراً لتواصلكم معنا.",
+)
+
 # ==== ذاكرة تشغيلية (تُمسح عند إعادة تشغيل السيرفر) ====
 conversation_memory = {}          # رقم الزبون -> آخر 15 تبادل رسائل
 pending_orders = {}               # يُستخدم فقط لو DATABASE_URL غير مضبوط (احتياط/تجربة محلية)
 seen_message_ids = deque(maxlen=500)   # لمنع الرد المكرر على نفس الرسالة
 message_timestamps = defaultdict(list)  # رقم الزبون -> أوقات آخر رسائله (لضبط معدل الاستخدام)
+known_customers = set()           # أرقام تواصلت معنا قبل — لإرسال رسالة الترحيب مرة وحدة فقط لكل زبون
+                                   # (تُمسح عند إعادة تشغيل السيرفر، يعني ممكن تترسل مرة إضافية بعد ريستارت نادر — مقبول)
 
 MEMORY_TURNS = 15          # آخر 15 رسالة من الزبون (= 30 عنصر بالتاريخ: سؤال+رد)
 RATE_LIMIT_MAX_MSGS = 25   # أقصى عدد رسائل بالساعة الواحدة لكل زبون
@@ -605,6 +618,11 @@ def receive_message():
             if handled:
                 return jsonify({"status": "owner_action_handled"}), 200
             # إذا ما كانت قبول/رفض، تكمل كرسالة عادية (نادراً ما تحتاجها)
+
+        # -- رسالة الترحيب الثابتة (أول تواصل من هذا الرقم فقط، ما تشمل صاحب البزنس) --
+        if from_number not in known_customers and from_number != OWNER_PHONE:
+            known_customers.add(from_number)
+            send_whatsapp_message(from_number, WELCOME_MESSAGE)
 
         # -- حماية من إغراق الرسائل --
         if is_rate_limited(from_number):
