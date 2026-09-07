@@ -45,6 +45,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 BUSINESS_NAME = os.environ.get("BUSINESS_NAME", "المتجر")
 DISCOUNT_TIERS = json.loads(os.environ.get("DISCOUNT_TIERS", "[]"))
 
+# الرابط العام للسيرفر — يُستخدم لبناء روابط متابعة الطلب المرسلة للزبون عبر واتساب.
+# مضبوط افتراضياً على رابط Render الحالي؛ لو تغيّر الدومين مستقبلاً يكفي تغيير هذا المتغير بالإعدادات.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://baitaltamr-agent.onrender.com").rstrip("/")
+
 # ==== ذاكرة تشغيلية (تُمسح عند إعادة تشغيل السيرفر) ====
 conversation_memory = {}          # رقم الزبون -> آخر 15 تبادل رسائل
 pending_orders = {}               # يُستخدم فقط لو DATABASE_URL غير مضبوط (احتياط/تجربة محلية)
@@ -451,7 +455,8 @@ def resolve_order(order_id, action, notify_owner=None, reject_reason=None):
             f"سعر المنتجات: {format_money(data.get('product_price', 0))}\n"
             f"{format_delivery(data.get('delivery_price', 0))}\n"
             f"المجموع النهائي: {format_money(data.get('total', 0))}\n\n"
-            f"راح نوصلك بأقرب وقت، ونشكرك على ثقتك فينا 🙏"
+            f"راح نوصلك بأقرب وقت، ونشكرك على ثقتك فينا 🙏\n\n"
+            f"🔗 متابعة الطلب: {PUBLIC_BASE_URL}/track/{order_id}"
         )
         send_whatsapp_message(customer_number, summary)
         result_text = f"تم إعلام الزبون بقبول الطلب {order_id} ✅"
@@ -622,10 +627,11 @@ def receive_message():
         reply = ask_claude(user_text, from_number)
 
         order_data, reply = extract_order_block(reply)
+        new_order_id = None
         if order_data:
-            order_id = generate_order_id()
-            create_order(order_id, order_data, from_number)
-            notify_owner_new_order(order_id, order_data, from_number)
+            new_order_id = generate_order_id()
+            create_order(new_order_id, order_data, from_number)
+            notify_owner_new_order(new_order_id, order_data, from_number)
 
         reason, reply = extract_escalate_block(reply)
         if reason and OWNER_PHONE:
@@ -635,6 +641,14 @@ def receive_message():
             )
 
         send_whatsapp_message(from_number, reply)
+
+        # رسالة متابعة منفصلة تحتوي رابط صفحة تتبع الطلب (يفتح بأي متصفح موبايل، بدون تسجيل دخول)
+        if new_order_id:
+            tracking_url = f"{PUBLIC_BASE_URL}/track/{new_order_id}"
+            send_whatsapp_message(
+                from_number,
+                f"🔗 تقدر تتابع حالة طلبك بأي وقت من هذا الرابط:\n{tracking_url}",
+            )
 
     except Exception as e:
         print(f"[خطأ] معالجة الرسالة: {e}")
@@ -649,6 +663,100 @@ def receive_message():
 @app.route("/", methods=["GET"])
 def health_check():
     return f"وكيل {BUSINESS_NAME} يعمل ✅ | طلبات معلّقة: {count_pending_orders()}", 200
+
+
+# ============================================================
+# صفحة متابعة الطلب للزبون — /track/<order_id>
+# صفحة عامة (بدون تسجيل دخول) بديلة عن تطبيق موبايل مخصص: رابط واحد لكل طلب،
+# يفتح بأي متصفح موبايل، تتحدّث تلقائياً، ونفس تجربة "تتبع الشحنة" المعروفة.
+# ============================================================
+TRACK_PAGE_TEMPLATE = """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>متابعة الطلب — {{ business_name }}</title>
+{% if not is_final %}<meta http-equiv="refresh" content="20">{% endif %}
+<style>
+  body { font-family: -apple-system, Tahoma, Arial, sans-serif; background:#f5f5f4; margin:0; padding:20px 14px; color:#1c1917; }
+  .card { max-width:420px; margin:0 auto; background:#fff; border-radius:14px; padding:22px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size:1.15rem; margin:0 0 2px; }
+  .order-id { color:#78716c; font-size:.8rem; margin-bottom:16px; }
+  .badge { display:inline-block; padding:7px 16px; border-radius:999px; font-weight:700; font-size:.85rem; margin-bottom:18px; }
+  .badge.pending { background:#fef3c7; color:#92400e; }
+  .badge.accepted { background:#dcfce7; color:#166534; }
+  .badge.rejected { background:#fee2e2; color:#991b1b; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid #f0f0ef; font-size:.88rem; }
+  .row:last-of-type { border-bottom:none; }
+  .row .label { color:#78716c; white-space:nowrap; }
+  .row .value { text-align:left; }
+  .total-row { font-weight:700; font-size:1rem; padding-top:12px; }
+  .reason { margin-top:14px; padding:10px 12px; background:#fee2e2; border-radius:8px; font-size:.85rem; color:#7f1d1d; }
+  .note { text-align:center; font-size:.75rem; color:#a8a29e; margin-top:18px; }
+  .missing { max-width:420px; margin:60px auto; text-align:center; color:#78716c; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>📦 متابعة طلبك</h1>
+    <div class="order-id">رقم الطلب: {{ order_id }}</div>
+    <div class="badge {{ status_class }}">{{ status_label }}</div>
+    <div class="row"><span class="label">التفاصيل</span><span class="value">{{ items }}</span></div>
+    <div class="row"><span class="label">العنوان</span><span class="value">{{ address }}</span></div>
+    <div class="row"><span class="label">سعر المنتجات</span><span class="value">{{ product_price }}</span></div>
+    <div class="row"><span class="label">التوصيل</span><span class="value">{{ delivery }}</span></div>
+    <div class="row total-row"><span class="label">المجموع</span><span class="value">{{ total }}</span></div>
+    {% if reject_reason %}
+    <div class="reason">السبب: {{ reject_reason }}</div>
+    {% endif %}
+    {% if not is_final %}<div class="note">الصفحة تتحدّث تلقائياً كل 20 ثانية</div>{% endif %}
+  </div>
+</body>
+</html>
+"""
+
+TRACK_PAGE_MISSING = """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>لم يُعثر على الطلب</title></head>
+<body style="font-family:-apple-system,Tahoma,Arial,sans-serif;">
+  <div class="missing" style="max-width:420px;margin:60px auto;text-align:center;color:#78716c;">
+    ما لقينا طلب بهذا الرقم 🙏<br>تأكد من الرابط أو تواصل معنا مباشرة.
+  </div>
+</body>
+</html>
+"""
+
+_TRACK_STATUS_MAP = {
+    "بانتظار الموافقة": ("pending", "⏳ بانتظار المراجعة"),
+    "مقبول": ("accepted", "✅ تم تأكيد الطلب"),
+    "مرفوض": ("rejected", "❌ تم رفض الطلب"),
+}
+
+
+@app.route("/track/<order_id>", methods=["GET"])
+def track_order(order_id):
+    order = get_order(order_id)
+    if not order:
+        return render_template_string(TRACK_PAGE_MISSING), 404
+
+    data = order["data"]
+    status_class, status_label = _TRACK_STATUS_MAP.get(order["status"], ("pending", order["status"]))
+    return render_template_string(
+        TRACK_PAGE_TEMPLATE,
+        business_name=BUSINESS_NAME,
+        order_id=order_id,
+        status_class=status_class,
+        status_label=status_label,
+        is_final=(status_class != "pending"),
+        items=data.get("items", "-"),
+        address=data.get("address", "-"),
+        product_price=format_money(data.get("product_price", 0)),
+        delivery=format_delivery(data.get("delivery_price", 0)),
+        total=format_money(data.get("total", 0)),
+        reject_reason=data.get("reject_reason") if status_class == "rejected" else None,
+    )
 
 
 # ============================================================
