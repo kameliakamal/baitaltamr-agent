@@ -1076,13 +1076,14 @@ ORDERS_PAGE_TEMPLATE = """
     <h2>سجل الطلبات المنتهية (هذه الجلسة)</h2>
     {% if accepted or rejected %}
     <table>
-      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>سعر المنتجات</th><th>التوصيل</th><th>المجموع</th><th>الحالة</th></tr>
+      <tr><th>الوقت</th><th>رقم الطلب</th><th>الزبون</th><th>التفاصيل</th><th>العنوان</th><th>سعر المنتجات</th><th>التوصيل</th><th>المجموع</th><th>الحالة</th></tr>
       {% for oid, o in (accepted + rejected) %}
       <tr>
         <td>{{ o.created_at or '-' }}</td>
         <td>{{ oid }}</td>
         <td dir="ltr">{{ o.customer_number }}</td>
         <td>{{ o.data.get('items','-') }}</td>
+        <td>{{ o.data.get('address','-') }}</td>
         <td>{{ format_money(o.data.get('product_price', 0)) }}</td>
         <td>{{ format_delivery(o.data.get('delivery_price', 0)) }}</td>
         <td><b>{{ format_money(o.data.get('total',0)) }}</b></td>
