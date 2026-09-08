@@ -76,6 +76,10 @@ DIALECT = os.environ.get("DIALECT", "العراقية البسيطة")
 # (طلبات المناسبات بالمندي عادة تحتاج تسعير خاص لا يغطيه السعر بالقطعة). صفر = تعطيل هذا الحد.
 BULK_ORDER_THRESHOLD = int(os.environ.get("BULK_ORDER_THRESHOLD", "150000"))
 
+# أسعار مناطق التوصيل الثلاث (من الأقرب للأبعد) — نفس القيم تُستخدم بنص البرومبت للذكاء الصناعي
+# وبالتحقق البرمجي من صحة الطلب، عشان يبقى مصدر وحيد للحقيقة بدل رقمين منفصلين بالكود.
+DELIVERY_ZONE_PRICES = json.loads(os.environ.get("DELIVERY_ZONE_PRICES", "[3000, 4000, 5000]"))
+
 # ==== ذاكرة تشغيلية (تُمسح عند إعادة تشغيل السيرفر) ====
 conversation_memory = {}          # رقم الزبون -> آخر 15 تبادل رسائل
 pending_orders = {}               # يُستخدم فقط لو DATABASE_URL غير مضبوط (احتياط/تجربة محلية)
@@ -89,7 +93,7 @@ RATE_LIMIT_MAX_MSGS = 25   # أقصى عدد رسائل بالساعة الوا�
 RATE_LIMIT_WINDOW = 3600   # ثانية (ساعة واحدة)
 PRICES_CACHE_TTL = 180     # ثانية — كم نحتفظ بالأسعار قبل ما نعيد تحميلها من الشيت
 
-_prices_cache = {"text": None, "fetched_at": 0}
+_prices_cache = {"rows": None, "fetched_at": 0}
 
 
 # ============================================================
@@ -262,29 +266,52 @@ if DATABASE_URL:
 # ============================================================
 # قراءة الأسعار الحية (مع كاش قصير لتقليل زمن الاستجابة وحمل الشبكة)
 # ============================================================
-def get_prices_text(force_refresh=False):
+def _fetch_price_rows(force_refresh=False):
+    """يرجع لستة (اسم_الصنف, السعر) من الشيت — مع كاش مشترك تستخدمه get_prices_text()
+    (للعرض بالبرومبت) و get_price_map() (للتحقق من صحة حساب الطلبات)."""
     now = time.time()
-    if not force_refresh and _prices_cache["text"] is not None and (now - _prices_cache["fetched_at"]) < PRICES_CACHE_TTL:
-        return _prices_cache["text"]
+    if not force_refresh and _prices_cache["rows"] is not None and (now - _prices_cache["fetched_at"]) < PRICES_CACHE_TTL:
+        return _prices_cache["rows"]
     try:
         response = requests.get(SHEET_CSV_URL, timeout=10)
         response.raise_for_status()
         reader = csv.reader(io.StringIO(response.text))
-        rows = list(reader)
-        lines = []
-        for row in rows[1:]:
+        raw_rows = list(reader)
+        rows = []
+        for row in raw_rows[1:]:
             if len(row) >= 2 and row[0].strip():
-                lines.append(f"- {row[0].strip()} = {row[1].strip()} دينار عراقي")
-        text = "\n".join(lines) if lines else "لا توجد أسعار محدثة حالياً."
-        _prices_cache["text"] = text
+                try:
+                    price = int(str(row[1]).strip().replace(",", ""))
+                except ValueError:
+                    continue
+                rows.append((row[0].strip(), price))
+        _prices_cache["rows"] = rows
         _prices_cache["fetched_at"] = now
-        return text
+        return rows
     except Exception as e:
         print(f"[خطأ] قراءة الأسعار: {e}")
         # لو عندنا نسخة قديمة بالكاش نرجعها بدل ما نوقف الرد كلياً
-        if _prices_cache["text"] is not None:
-            return _prices_cache["text"]
+        return _prices_cache["rows"] or []
+
+
+def get_prices_text(force_refresh=False):
+    rows = _fetch_price_rows(force_refresh)
+    if not rows:
         return "تعذر تحميل الأسعار حالياً — أخبر الزبون بالتواصل لاحقاً."
+    return "\n".join(f"- {name} = {price} دينار عراقي" for name, price in rows)
+
+
+def _normalize_item_name(name):
+    return " ".join(str(name or "").split()).strip().lower()
+
+
+def get_price_map(force_refresh=False):
+    """يرجع قاموس {اسم_مطبّع: (الاسم_الأصلي, السعر)} للتحقق من حساب الذكاء الصناعي
+    قبل ما يوصل الطلب للإدارة — بدل ما نثق بجمعه بدون تدقيق."""
+    return {
+        _normalize_item_name(name): (name, price)
+        for name, price in _fetch_price_rows(force_refresh)
+    }
 
 
 def format_money(amount):
@@ -293,6 +320,24 @@ def format_money(amount):
 
 def format_delivery(amount):
     return "توصيل مجاني 🚚" if not amount else f"{amount:,} دينار توصيل"
+
+
+def build_delivery_zone_text():
+    """يبني فقرة أسعار مناطق التوصيل من DELIVERY_ZONE_PRICES — نفس القيم يستخدمها
+    التحقق البرمجي بـ finalize_order_data()، فتغيير المتغير بالإعدادات يكفي لتحديث الاثنين معاً."""
+    labels = [
+        "المناطق القريبة من مركز المدينة (كمحيط الصحن الحيدري الشريف ووسط النجف)",
+        "المناطق متوسطة البعد ضمن النجف (كالكوفة وضواحيها والأحياء المجاورة لوسط المدينة)",
+        "أطراف مدينة النجف والمناطق البعيدة ضمن المحافظة",
+    ]
+    prices = sorted(DELIVERY_ZONE_PRICES)
+    lines = [f"- {label}: {format_money(price)}" for label, price in zip(labels, prices)]
+    default_price = prices[len(prices) // 2] if prices else 0
+    lines.append(
+        f"لو ما قدرت تحدد منطقة الزبون بدقة من كلامه، اسأله بأسلوب ودي عن أقرب معلم معروف له لتحديدها، "
+        f"وإذا استمر الغموض استخدم {format_money(default_price)} كسعر توصيل افتراضي معقول."
+    )
+    return "\n".join(lines)
 
 
 def build_discount_text():
@@ -339,10 +384,8 @@ def build_system_prompt():
 واشرح إن التوصيل يقتصر على النجف حالياً، واشكره على تواصله — ولا تكمل إجراءات الطلب ولا تستخدم وسم [ORDER_PENDING].
 
 سعر التوصيل داخل النجف حسب المنطقة (هذا تقسيم مبدئي قابل للتعديل لاحقاً حسب خبرة المندوب الفعلية):
-- المناطق القريبة من مركز المدينة (كمحيط الصحن الحيدري الشريف ووسط النجف): 3,000 دينار
-- المناطق متوسطة البعد ضمن النجف (كالكوفة وضواحيها والأحياء المجاورة لوسط المدينة): 4,000 دينار
-- أطراف مدينة النجف والمناطق البعيدة ضمن المحافظة: 5,000 دينار
-لو ما قدرت تحدد منطقة الزبون بدقة من كلامه، اسأله بأسلوب ودي عن أقرب معلم معروف له لتحديدها، وإذا استمر الغموض استخدم 4,000 دينار كسعر توصيل افتراضي معقول.
+{build_delivery_zone_text()}
+لا ترسل سعر توصيل غير هذي القيم الثلاث بالضبط — إذا ما تقدر تحدد المنطقة، استخدم القيمة الافتراضية المذكورة أعلاه بدل تخمين رقم جديد.
 
 ## كيف تجمع بيانات الطلب:
 اجمع المعلومات تدريجياً ضمن الحوار الطبيعي — لا تطلبها كلها دفعة وحدة بقائمة استبيان. الترتيب المنطقي:
@@ -355,12 +398,12 @@ def build_system_prompt():
 لو مجموع الطلب المتوقع يتجاوز {format_money(BULK_ORDER_THRESHOLD)} أو الزبون ذكر إنه لمناسبة/عزيمة/تجمع كبير — لا تكمل التسعير الآلي ولا ترسل [ORDER_PENDING]، لأن هذي الطلبات غالباً تحتاج تسعير خاص من الإدارة. استخدم وسم [ESCALATE] واشرح إنه طلب كبير يحتاج تنسيق مباشر مع الإدارة.
 
 ## عند موافقة الزبون على الملخص (أصناف + كمية كل صنف + عنوان داخل النجف + سعر التوصيل):
-لازم تجمع: كل صنف وكميته، سعر الأصناف، سعر التوصيل حسب المنطقة (من الجدول أعلاه)، طريقة الدفع، والعنوان الكامل. المجموع النهائي = سعر الأصناف + سعر التوصيل بالضبط.
-اكتب حقل "items" بصيغة تفصيلية توضح حساب كل صنف (الكمية × السعر = الفرعي) عشان الإدارة تقدر تتأكد من صحة المجموع بنظرة واحدة، مثال: "مندي دجاجة كاملة 2×16200=32400، مقبلات وسط 1×4800=4800".
+لازم تجمع: كل صنف وكميته، سعر التوصيل حسب المنطقة (من الجدول أعلاه، بالضبط كما هو)، طريقة الدفع، والعنوان الكامل.
+مهم جداً: لا تحسب سعر الأصناف ولا المجموع بنفسك — السيرفر يحسبها تلقائياً من قائمة الأسعار الحقيقية لتفادي أي خطأ حسابي. مهمتك فقط تحديد كل صنف بالاسم المطابق تماماً لاسمه بقائمة الأسعار أعلاه (بدون تعديل أو اختصار بالاسم) وكميته المطلوبة.
 لا تؤكد الطلب نهائياً بنفسك — كل طلب يحتاج موافقة الإدارة أولاً. استخدم بالضبط هذي الصيغة:
 
 [ORDER_PENDING]
-{{"items": "تفصيل كل صنف وكميته وحسابه كما بالمثال أعلاه", "product_price": سعر_الأصناف_بدون_فواصل, "delivery_price": سعر_التوصيل_بدون_فواصل_أو_0, "total": سعر_الأصناف_زائد_التوصيل, "address": "العنوان اللي ذكره الزبون", "payment_method": "طريقة الدفع المتفق عليها"}}
+{{"line_items": [{{"name": "الاسم بالضبط كما بقائمة الأسعار أعلاه", "qty": الكمية_رقم}}], "delivery_price": سعر_التوصيل_من_الجدول_بدون_فواصل, "address": "العنوان اللي ذكره الزبون", "payment_method": "طريقة الدفع المتفق عليها"}}
 [/ORDER_PENDING]
 تم استلام طلبك! نشكرك على تواصلك معنا 🙏 راح تتأكد لك من الإدارة خلال دقائق ونرجعلك فوراً.
 
@@ -398,10 +441,7 @@ def build_system_prompt():
 # ============================================================
 # استدعاء Claude
 # ============================================================
-def ask_claude(user_message, phone_number):
-    history = conversation_memory.get(phone_number, [])
-    history.append({"role": "user", "content": user_message})
-
+def _call_claude_api(system_payload, messages):
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -412,13 +452,33 @@ def ask_claude(user_message, phone_number):
         json={
             "model": "claude-sonnet-4-6",
             "max_tokens": 500,
-            "system": build_system_prompt(),
-            "messages": history[-(MEMORY_TURNS * 2):],
+            "system": system_payload,
+            "messages": messages,
         },
         timeout=30,
     )
     response.raise_for_status()
-    reply_text = response.json()["content"][0]["text"]
+    return response.json()["content"][0]["text"]
+
+
+def ask_claude(user_message, phone_number):
+    history = conversation_memory.get(phone_number, [])
+    history.append({"role": "user", "content": user_message})
+    messages = history[-(MEMORY_TURNS * 2):]
+
+    prompt_text = build_system_prompt()
+    try:
+        # نص النظام يتكرر بنفس المحتوى تقريباً بين رسائل متتالية (يتغيّر فقط كل 180 ثانية
+        # مع تحديث الأسعار)، فتفعيل الكاش يقلل كلفة كل رسالة بشكل ملموس مع زيادة حجم الاستخدام.
+        # لو الطلب فشل لأي سبب (مثلاً تغيّر بصيغة الـ API)، نرجع تلقائياً للصيغة العادية بدون كاش
+        # بدل ما نوقف خدمة الرد على الزبون بالكامل.
+        reply_text = _call_claude_api(
+            [{"type": "text", "text": prompt_text, "cache_control": {"type": "ephemeral"}}],
+            messages,
+        )
+    except Exception as e:
+        print(f"[تحذير] فشل الطلب مع تفعيل الكاش، إعادة المحاولة بدون كاش: {e}")
+        reply_text = _call_claude_api(prompt_text, messages)
 
     history.append({"role": "assistant", "content": reply_text})
     conversation_memory[phone_number] = history[-(MEMORY_TURNS * 2):]
@@ -456,8 +516,10 @@ def generate_order_id():
     return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"  # احتياط بعيد الاحتمال
 
 
-def notify_owner_new_order(order_id, order_data, customer_number):
+def notify_owner_new_order(order_id, order_data, customer_number, warning=None):
+    warning_block = f"⚠️ تنبيه قبل الموافقة: {warning}\n\n" if warning else ""
     text = (
+        f"{warning_block}"
         f"📦 طلب جديد بانتظار موافقتك\n\n"
         f"رقم الطلب: {order_id}\n"
         f"الزبون: {customer_number}\n"
@@ -499,6 +561,72 @@ def extract_order_block(reply_text):
         return None, reply_text
     cleaned = reply_text.replace(match.group(0), "").strip()
     return order_data, cleaned
+
+
+def finalize_order_data(raw_order_data):
+    """يتحقق من حساب الذكاء الصناعي بدل ما يوثق به مباشرة: يعيد حساب سعر الأصناف
+    والمجموع من قائمة الأسعار الحقيقية اعتماداً على line_items (اسم + كمية)، بدل ما
+    يعتمد على جمع النموذج اللغوي نفسه (عرضة لخطأ حسابي بالطلبات متعددة الأصناف).
+    يرجع (order_data_نظيف, نص_تحذير_أو_None) — التحذير يُعرض لصاحب البزنس فقط قبل ما يقبل الطلب."""
+    warnings = []
+    line_items = raw_order_data.get("line_items")
+
+    if isinstance(line_items, list) and line_items:
+        price_map = get_price_map()
+        resolved_lines = []
+        unmatched = []
+        product_price = 0
+        for li in line_items:
+            if not isinstance(li, dict):
+                continue
+            raw_name = str(li.get("name", "")).strip()
+            try:
+                qty = int(li.get("qty"))
+            except (TypeError, ValueError):
+                qty = None
+            match = price_map.get(_normalize_item_name(raw_name))
+            if match and qty and qty > 0:
+                true_name, unit_price = match
+                subtotal = unit_price * qty
+                product_price += subtotal
+                resolved_lines.append(f"{true_name} {qty}×{unit_price}={subtotal}")
+            else:
+                unmatched.append(f"{raw_name or '؟'} (الكمية: {li.get('qty', '؟')})")
+
+        items_text = "، ".join(resolved_lines) if resolved_lines else (raw_order_data.get("items") or "-")
+        if unmatched:
+            warnings.append("أصناف ما قدرنا نطابقها مع قائمة الأسعار، تأكد منها يدوياً: " + "، ".join(unmatched))
+    else:
+        # النموذج ما التزم بصيغة line_items — رجوع احتياطي للحقول القديمة مع تنبيه صريح
+        # بدل ما نوقف الطلب بالكامل (أفضل نستلم طلب يحتاج مراجعة من ما نخسره).
+        items_text = raw_order_data.get("items", "-")
+        try:
+            product_price = int(raw_order_data.get("product_price", 0))
+        except (TypeError, ValueError):
+            product_price = 0
+        warnings.append("الرد ما استخدم صيغة الأصناف المنظمة — السعر أدناه من حساب الذكاء الصناعي نفسه وغير محقق آلياً.")
+
+    try:
+        delivery_price = int(raw_order_data.get("delivery_price", 0) or 0)
+    except (TypeError, ValueError):
+        delivery_price = 0
+    if delivery_price != 0 and delivery_price not in DELIVERY_ZONE_PRICES:
+        warnings.append(f"سعر توصيل غير معتاد ({format_money(delivery_price)}) — تحقق من المنطقة قبل القبول.")
+
+    total = product_price + delivery_price
+    if BULK_ORDER_THRESHOLD and total >= BULK_ORDER_THRESHOLD:
+        warnings.append(f"طلب كبير ({format_money(total)}) يتجاوز الحد المعتاد — راجع التسعير قبل القبول.")
+
+    clean_data = {
+        "items": items_text,
+        "product_price": product_price,
+        "delivery_price": delivery_price,
+        "total": total,
+        "address": raw_order_data.get("address", "-"),
+        "payment_method": raw_order_data.get("payment_method") or PAYMENT_METHODS,
+    }
+    warning_text = " | ".join(warnings) if warnings else None
+    return clean_data, warning_text
 
 
 def extract_escalate_block(reply_text):
@@ -719,9 +847,10 @@ def receive_message():
         order_data, reply = extract_order_block(reply)
         new_order_id = None
         if order_data:
+            order_data, price_warning = finalize_order_data(order_data)
             new_order_id = generate_order_id()
             create_order(new_order_id, order_data, from_number)
-            notify_owner_new_order(new_order_id, order_data, from_number)
+            notify_owner_new_order(new_order_id, order_data, from_number, warning=price_warning)
 
         reason, reply = extract_escalate_block(reply)
         if reason and OWNER_PHONE:
