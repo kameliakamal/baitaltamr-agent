@@ -131,6 +131,43 @@ def init_db():
                 cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_price BIGINT DEFAULT 0")
                 cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS reject_reason TEXT")
                 cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method TEXT")
+                # جدول الزبائن المعروفين — لتذكّر مين استلم رسالة الترحيب من قبل حتى بعد
+                # إعادة تشغيل السيرفر (نشر تحديث جديد، أو توقف السيرفر لعدم النشاط). قبل هذا
+                # الجدول كانت القائمة بالذاكرة فقط، فكل إعادة تشغيل تعيد إرسال الترحيب من جديد.
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS known_customers (
+                        phone TEXT PRIMARY KEY,
+                        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                """)
+    finally:
+        conn.close()
+
+
+def is_known_customer(phone):
+    if not DATABASE_URL:
+        return phone in known_customers
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM known_customers WHERE phone = %s", (phone,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def mark_known_customer(phone):
+    if not DATABASE_URL:
+        known_customers.add(phone)
+        return
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO known_customers (phone) VALUES (%s) ON CONFLICT (phone) DO NOTHING",
+                    (phone,),
+                )
     finally:
         conn.close()
 
@@ -828,8 +865,9 @@ def receive_message():
             # إذا ما كانت قبول/رفض، تكمل كرسالة عادية (نادراً ما تحتاجها)
 
         # -- رسالة الترحيب الثابتة (أول تواصل من هذا الرقم فقط، ما تشمل صاحب البزنس) --
-        if from_number not in known_customers and from_number != OWNER_PHONE:
-            known_customers.add(from_number)
+        # محفوظة بقاعدة البيانات (لو موجودة) عشان ما تترسل مرة ثانية بعد أي إعادة تشغيل للسيرفر
+        if not is_known_customer(from_number) and from_number != OWNER_PHONE:
+            mark_known_customer(from_number)
             send_whatsapp_message(from_number, WELCOME_MESSAGE)
 
         # -- حماية من إغراق الرسائل --
