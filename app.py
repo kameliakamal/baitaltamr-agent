@@ -25,6 +25,10 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "change-me")
 SHEET_CSV_URL = os.environ.get("SHEET_CSV_URL")
 
+# مفتاح OpenAI لتحويل الرسائل الصوتية إلى نص (Whisper) — لو غير مضبوط، تبقى الرسائل
+# الصوتية تترفض بنفس الرسالة القديمة بدل ما يصير خطأ
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
 # سر تطبيق Meta (Settings > Basic > App Secret) — لو موجود، يتم التحقق من توقيع كل ويبهوك وارد
 APP_SECRET = os.environ.get("APP_SECRET", "")
 
@@ -550,6 +554,46 @@ def send_whatsapp_message(to_number, message_text):
 
 
 # ============================================================
+# تحويل الرسائل الصوتية إلى نص (Whisper عبر OpenAI)
+# ============================================================
+def download_whatsapp_media(media_id):
+    """يجلب رابط الملف الوسائطي المؤقت من Meta (صالح ~٥ دقائق) ثم يحمّل محتواه كبايتات."""
+    meta_url = f"https://graph.facebook.com/v21.0/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+
+    meta_resp = requests.get(meta_url, headers=headers, timeout=15)
+    meta_resp.raise_for_status()
+    media_url = meta_resp.json()["url"]
+
+    file_resp = requests.get(media_url, headers=headers, timeout=30)
+    file_resp.raise_for_status()
+    return file_resp.content
+
+
+def transcribe_voice_message(media_id):
+    """يحوّل رسالة صوتية واتساب (OGG/Opus) إلى نص عربي عبر OpenAI Whisper.
+    يرجع None لو المفتاح غير مضبوط أو صار أي خطأ (تحميل الملف أو الاتصال بـ OpenAI)،
+    بدون ما يوقف معالجة بقية الرسالة."""
+    if not OPENAI_API_KEY:
+        print("[تحذير] OPENAI_API_KEY غير مضبوط — تم تجاهل الرسالة الصوتية")
+        return None
+    try:
+        audio_bytes = download_whatsapp_media(media_id)
+        files = {"file": ("voice.ogg", audio_bytes, "audio/ogg")}
+        data = {"model": "whisper-1", "language": "ar"}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        r = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers=headers, files=files, data=data, timeout=30,
+        )
+        r.raise_for_status()
+        return r.json().get("text", "").strip() or None
+    except Exception as e:
+        print(f"[خطأ] تحويل الصوت لنص: {e}")
+        return None
+
+
+# ============================================================
 # إضافة 1: إشعار صاحب البزنس بالطلبات الجديدة + تسجيلها
 # ============================================================
 def generate_order_id():
@@ -848,13 +892,27 @@ def receive_message():
         message = value["messages"][0]
         message_id = message.get("id", "")
         from_number = message["from"]
+        msg_type = message.get("type", "")
         user_text = message.get("text", {}).get("body", "")
 
         if is_duplicate_message(message_id):
             return jsonify({"status": "duplicate_ignored"}), 200
 
+        # -- رسالة صوتية: نحوّلها لنص عبر Whisper وناخذ نفس مسار الرسائل النصية --
+        if not user_text and msg_type == "audio":
+            audio_id = message.get("audio", {}).get("id")
+            transcribed = transcribe_voice_message(audio_id) if audio_id else None
+            if transcribed:
+                user_text = transcribed
+            else:
+                send_whatsapp_message(
+                    from_number,
+                    "ما قدرت أفهم الرسالة الصوتية بوضوح، ممكن تكتبها نص أو تعيد تسجيلها؟ 🙏",
+                )
+                return jsonify({"status": "audio_failed"}), 200
+
         if not user_text:
-            send_whatsapp_message(from_number, "استلمت رسالتك، بس أقدر أتعامل حالياً مع النصوص فقط 🙏")
+            send_whatsapp_message(from_number, "استلمت رسالتك، بس أقدر أتعامل حالياً مع النصوص أو الرسائل الصوتية فقط 🙏")
             return jsonify({"status": "non_text_handled"}), 200
 
         # -- رسالة من صاحب البزنس (قبول/رفض طلب) --
