@@ -1,0 +1,379 @@
+<!doctype html><html lang="ar" dir="rtl" data-palette="{{ palette }}"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{ b.name }}</title>
+<meta name="description" content="{{ b.tagline or b.name }}">
+<meta name="theme-color" content="{{ {'ivory':'#F3F3F1','navy':'#0C1B33'}.get(palette, '#24160A') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Aref+Ruqaa+Ink:wght@400;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=Reem+Kufi:wght@500;700&display=swap" rel="stylesheet">
+<style>
+/* "A rice warehouse under stage light": warm tobacco dark, one spotlight whose colour follows the product. */
+:root{--bg:#24160A;--bg2:#1A1008;--text:#F7EBD0;--sub:#E3D2AE;--muted:#C9AE80;--line:#4A331A;--gold:#E8B23A;--ink:#24160A;
+ --accent-text:#E8B23A;--rail:#9C8560;--bar:#F4E9D2;--bar-text:#24160A;--bar-sub:#6A5230;--bar-btn:#24160A;--bar-btn-text:#F7EBD0;
+ --glow-c:100%;--glow-k:35%;--heading:var(--text);
+ --display:"Aref Ruqaa Ink",serif;--body:"IBM Plex Sans Arabic",Tahoma,sans-serif;--glow:#7A4F16;
+ box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+:root[data-palette="ivory"]{--bg:#F3F3F1;--bg2:#FFFFFF;--text:#17140F;--sub:#3D372E;--muted:#655D51;--line:#DDDAD3;--gold:#1F4E9C;--ink:#FFFFFF;--accent-text:#1F4E9C;--rail:#6B645A;--bar:#17140F;--bar-text:#F3F3F1;--bar-sub:#B8B0A2;--bar-btn:#1F4E9C;--bar-btn-text:#FFFFFF;--glow-c:26%;--glow-k:9%;--heading:#16325F}
+:root[data-palette="navy"]{--bg:#0C1B33;--bg2:#081426;--text:#F3F5F9;--sub:#CBD4E4;--muted:#9FAECA;--line:#243B61;--gold:#E2B03E;--ink:#0C1B33;--accent-text:#E2B03E;--rail:#8C9BB8;--bar:#F3F5F9;--bar-text:#0C1B33;--bar-sub:#4B5B7A;--bar-btn:#0C1B33;--bar-btn-text:#F3F5F9;--glow-c:55%;--glow-k:18%}
+html{background:var(--bg);scroll-padding-top:calc(88px + env(safe-area-inset-top,0px));scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+*{box-sizing:border-box}
+body{margin:0;color:var(--text);font:17px/1.7 var(--body);background:var(--bg)}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--gold);outline-offset:3px}
+.light{position:fixed;inset:0;z-index:0;background:radial-gradient(ellipse 48vw 60vh at 30% 50%,color-mix(in srgb,var(--glow) var(--glow-c),var(--bg)) 0%,color-mix(in srgb,var(--glow) var(--glow-k),var(--bg)) 45%,var(--bg) 100%)}
+#stage{position:fixed;inset:0;z-index:1;touch-action:pan-y}
+#stage canvas{display:block;width:100%;height:100%}
+#still{position:fixed;z-index:1;left:8vw;top:52%;transform:translateY(-50%) rotate(-4deg);height:68vh;display:none;
+ filter:drop-shadow(0 30px 30px rgba(0,0,0,.45));border-radius:22px 22px 14px 14px}
+.static #still{display:block}.static #stage{display:none}
+.ui{position:relative;z-index:2;pointer-events:none}
+.ui a,.ui button,.ui input,.ui .pe{pointer-events:auto}
+
+nav.top{position:fixed;top:0;inset-inline:0;z-index:3;height:84px;padding:0 clamp(20px,5vw,72px);padding-top:env(safe-area-inset-top,0px);
+ display:flex;align-items:center;justify-content:space-between;pointer-events:none}
+nav.top>*{pointer-events:auto}
+.brand{display:flex;align-items:center;gap:12px;text-decoration:none;font-weight:600;line-height:1.3}
+.brand img{width:42px;height:42px;border-radius:50%;object-fit:cover;background:#fff}
+.brand small{display:block;font-weight:400;font-size:13px;color:var(--muted)}
+.links{display:flex;align-items:center;gap:32px;font-size:16px}
+.links a{text-decoration:none}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;cursor:pointer;text-decoration:none;
+ font:600 17px var(--body);padding:14px 28px;border-radius:999px;background:var(--gold);color:var(--ink);min-height:48px}
+.btn.ghost{background:transparent;color:var(--text);box-shadow:inset 0 0 0 1.5px var(--muted)}
+.btn svg{width:18px;height:18px}
+
+.chapter{min-height:100vh;min-height:100svh;display:flex;align-items:center;padding:96px clamp(20px,5vw,72px) 110px}
+.copy{margin-inline-start:0;width:min(560px,44vw);display:flex;flex-direction:column;gap:22px}
+.brandline{font-size:19px;color:var(--sub);margin-top:-8px}
+h1,h2{margin:0;color:var(--heading);font-family:var(--display);font-weight:700;line-height:1.05;letter-spacing:0;text-wrap:balance}
+h1{font-size:clamp(50px,7.2vw,96px)}
+h2{font-size:clamp(46px,6.4vw,88px)}
+h3{text-wrap:balance}
+.copy p,.lead{text-wrap:pretty}
+.copy p{margin:0;font-size:20px;line-height:1.75;color:var(--sub);max-width:34ch}
+.cta{display:flex;gap:12px;flex-wrap:wrap}
+.facts{display:flex;margin-top:14px;font-size:15px;color:var(--muted)}
+.facts div{padding:0 26px}.facts div:first-child{padding-inline-start:0}.facts div+div{border-inline-start:1px solid var(--line)}
+.facts b{display:block;font-size:17px;color:var(--text)}
+.specs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-block:1px solid var(--line)}
+.specs div{padding:14px 18px}.specs div:first-child{padding-inline-start:0}.specs div+div{border-inline-start:1px solid var(--line)}
+.specs span{display:block;font-size:14px;color:var(--muted)}.specs b{font-size:18px;font-weight:600}
+.buy{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:6px;padding:6px;border-radius:999px;box-shadow:inset 0 0 0 1.5px var(--line)}
+.step button{width:44px;height:44px;border-radius:50%;border:0;background:var(--text);color:var(--bg);font:600 22px var(--body);cursor:pointer}
+.step output{min-width:64px;text-align:center;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.step output small{font-size:14px;font-weight:400;color:var(--muted)}
+.added{font-size:15px;color:var(--accent-text);min-height:1.5em}
+
+.rail{position:fixed;z-index:3;top:50%;inset-inline-start:clamp(20px,5vw,72px);transform:translateY(-50%);display:none;flex-direction:column;gap:18px;font-size:15px;color:var(--rail);pointer-events:auto}
+.rail a{text-decoration:none;display:flex;gap:12px;align-items:center}.rail a span{width:18px;height:2px;background:currentColor;opacity:.5;transition:width .3s,opacity .3s}
+.rail a[aria-current]{color:var(--text);font-weight:600}.rail a[aria-current] span{width:32px;opacity:1;background:var(--gold)}
+@media (min-width:1100px){.rail{display:flex}.chapter{padding-inline-start:calc(clamp(20px,5vw,72px) + 200px)}.chapter.first{padding-inline-start:clamp(20px,5vw,72px)}}
+body.at-top .rail,body.past .rail{opacity:0;pointer-events:none}.rail{transition:opacity .3s}
+
+.company{position:relative;z-index:2;background:var(--bg2);border-top:1px solid var(--line)}
+.sec{padding:96px clamp(20px,5vw,72px);border-bottom:1px solid var(--line)}
+.wrap2{max-width:1180px;margin:0 auto}
+.sec h2{font-size:clamp(48px,6vw,84px);margin-bottom:22px}
+.lead{font-size:clamp(18px,2vw,22px);line-height:1.9;color:var(--sub);max-width:58ch;margin:0}
+.rows{margin-top:10px;border-top:1px solid var(--line)}
+.rows>div{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:40px;align-items:baseline;padding:30px 0;border-bottom:1px solid var(--line)}
+.rows h3{margin:0;font:700 clamp(30px,3.4vw,46px)/1.15 var(--display);color:var(--heading)}
+.rows p{margin:0;color:var(--sub);font-size:19px;max-width:52ch}
+.split{display:grid;grid-template-columns:220px 1fr;gap:56px;align-items:center}
+.seal{width:220px;height:220px}
+.steps{list-style:none;counter-reset:s;margin:10px 0 40px;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px}
+.steps li{counter-increment:s;color:var(--sub);border-top:2px solid var(--gold);padding-top:18px}
+.steps li::before{content:counter(s,arabic-indic);display:block;font:700 44px/1 var(--display);color:var(--accent-text);margin-bottom:10px}
+.steps b{display:block;color:var(--heading);font-size:20px;margin-bottom:4px}
+.split2{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:start}
+.ways{list-style:none;margin:0;padding:0}
+.ways li{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:16px 0;border-bottom:1px solid var(--line);font-size:18px}
+.ways span{color:var(--muted)}.ways a{font-weight:600;text-decoration:none;direction:ltr}
+.agency h2{font-size:clamp(44px,5vw,72px)}
+.agency .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:28px;margin-top:28px}
+.agency .a{display:grid;grid-template-columns:96px 1fr;gap:18px;align-items:center}
+.agency img{width:96px;aspect-ratio:3/4;object-fit:cover}
+.agency h3{margin:0;font:600 19px var(--body)}.agency p{margin:4px 0 0;color:var(--muted);font-size:15px}
+footer{padding:28px clamp(20px,5vw,72px) 130px;color:var(--muted);font-size:14px}
+
+.order{position:fixed;z-index:4;bottom:0;inset-inline:0;background:var(--bar);color:var(--bar-text);transform:translateY(110%);transition:transform .3s ease;
+ padding:14px clamp(20px,5vw,72px) calc(14px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;justify-content:space-between;gap:14px}
+.order.on{transform:none}
+.order b{font-size:20px}.order small{display:block;font-size:14px;color:var(--bar-sub);line-height:1.4}
+.order .btn{background:var(--bar-btn);color:var(--bar-btn-text)}
+.hint{position:fixed;z-index:2;bottom:22px;left:30vw;transform:translateX(-50%);font-size:14px;color:var(--muted);display:flex;gap:8px;align-items:center;pointer-events:none;transition:opacity .4s}
+body:not(.at-top) .hint,.static .hint{opacity:0}
+nav.top{transition:background .3s}
+body:not(.at-top) nav.top{background:var(--bg);box-shadow:0 1px 0 var(--line)}
+
+@media (max-width:760px){
+ body{font-size:16px}
+ .links a:not(.btn){display:none}.links .btn span{display:none}.links .btn{width:48px;padding:0}
+ .light{background:radial-gradient(ellipse 80vw 32vh at 50% 26%,color-mix(in srgb,var(--glow) var(--glow-c),var(--bg)) 0%,color-mix(in srgb,var(--glow) var(--glow-k),var(--bg)) 50%,var(--bg) 100%)}
+ #still{left:50%;top:22vh;height:34vh;transform:translate(-50%,-50%) rotate(-4deg)}
+ .chapter{align-items:flex-end;padding:46vh 20px 120px}
+ .copy{width:100%;gap:14px}
+ .copy p{font-size:16px}
+ .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:13px}.facts div{padding:0!important;border:0!important}.facts b{font-size:14px}
+ .specs div{padding:10px 10px}.specs b{font-size:15px}
+ .cta .btn{flex:1}
+ .hint{left:50%;bottom:auto;top:40vh}
+ .sec{padding:64px 20px}.steps{grid-template-columns:1fr;gap:28px}.rows>div{grid-template-columns:1fr;gap:8px;padding:22px 0}.rows p{font-size:16px}.split,.split2{grid-template-columns:1fr;gap:24px}.seal{width:140px;height:140px}
+ .ways li{font-size:16px}
+ /* text over the lower half needs a floor so it stays readable when the sack is behind it */
+ .copy{width:auto;background:linear-gradient(to bottom,color-mix(in srgb,var(--bg) 0%,transparent) 0,var(--bg) 90px,var(--bg) calc(100% - 80px),color-mix(in srgb,var(--bg) 0%,transparent) 100%);margin:0 -20px;padding:90px 20px 80px}
+ .brand small{display:none}
+ .cta .btn{padding:14px 12px;white-space:nowrap;font-size:16px}
+ .chapter{min-height:auto;padding:46vh 20px 0}
+ .chapter.first{padding-top:48vh}
+}
+@media (prefers-reduced-motion:reduce){.order,.rail{transition:none}}
+</style></head>
+<body class="at-top">
+<div class="light" id="light"></div>
+<div id="stage" aria-hidden="true"></div>
+<img id="still" alt="">
+
+<nav class="top">
+ <a class="brand" href="#top"><img src="{{ url_for('static', filename='clients/' ~ b.slug ~ '/logo.jpg') }}" alt="" onerror="this.remove()">{{ b.name.replace('شركة ','').replace(' للتجارة العامة','') }}<small>للتجارة العامة، {{ b.city or '' }}</small></a>
+ <div class="links">
+  <a href="#c-0">الأصناف</a>{% if b.about %}<a href="#about">من نحن</a>{% endif %}<a href="#how">كيف تطلب</a><a href="#contact">تواصل</a>
+  <a class="btn" aria-label="اطلب على واتساب" href="https://wa.me/{{ b.phone }}?text={{ 'السلام عليكم، أريد أستفسر عن الأسعار'|urlencode }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 21l2.1-5.5A8.4 8.4 0 1 1 21 11.5z"/></svg><span>اطلب على واتساب</span></a>
+ </div>
+</nav>
+
+<nav class="rail" aria-label="الأصناف">
+ {% for c in chapters %}<a href="#c-{{ loop.index0 }}" data-i="{{ loop.index0 }}"><span aria-hidden="true"></span>{{ c.title }}</a>{% endfor %}
+</nav>
+
+<main class="ui" id="top">
+{% for c in chapters %}
+<section class="chapter {{ 'first' if loop.first }}" id="c-{{ loop.index0 }}" data-i="{{ loop.index0 }}">
+ <div class="copy">
+  {% if loop.first %}
+   <h1>{{ c.title }}</h1>
+   <p>{{ b.tagline or c.note }}</p>
+   <div class="cta"><a class="btn" href="#buy-0">اطلب الآن</a><a class="btn ghost" href="#c-1">شوف الأصناف</a></div>
+   <div class="facts"><div><b>توصيل مجاني</b>داخل {{ b.city or 'المدينة' }}</div><div><b>ضمان الاسترجاع</b>بشرط التجربة</div><div><b>عروض خاصة</b>للمطاعم والمواكب</div></div>
+  {% else %}
+   <h2>{{ c.title }}</h2>
+   <div class="brandline">{{ c.brand }}</div>
+   <p>{{ c.note }}</p>
+  {% endif %}
+  <div class="specs"><div><span>التعبئة</span><b>{{ c.unit or 'كيس' }}</b></div><div><span>السعر</span><b>{{ (c.price|iqd ~ ' د.ع') if c.price else 'حسب الكمية' }}</b></div><div><span>التوصيل</span><b>مجاني في {{ b.city or 'المدينة' }}</b></div></div>
+  <div class="buy" id="buy-{{ loop.index0 }}" data-id="{{ c.id }}" data-name="{{ c.name }}" data-short="{{ c.title }}">
+   <div class="step pe"><button type="button" data-d="-1" aria-label="أقل">−</button><output>10 <small>كيس</small></output><button type="button" data-d="1" aria-label="أكثر">+</button></div>
+   <button type="button" class="btn add">أضف للطلب</button>
+   <div class="added" aria-live="polite"></div>
+  </div>
+ </div>
+</section>
+{% endfor %}
+</main>
+
+<div class="company">
+{% if b.about %}
+<section class="sec about" id="about">
+ <div class="wrap2">
+  <h2>من نحن</h2>
+  <p class="lead">{{ b.about }}</p>
+ </div>
+</section>
+{% endif %}
+
+{% if b.vertical == 'wholesale' %}
+<section class="sec who">
+ <div class="wrap2">
+  <h2>لمن نورّد</h2>
+  <div class="rows">
+   <div><h3>مطاعم المندي</h3><p>أرز بسمتي درجة أولى بطلب متكرر، وعروض خاصة للمطاعم، والتوصيل مجاني داخل {{ b.city }}.</p></div>
+   <div><h3>المواكب الحسينية</h3><p>كميات كبيرة لمحرم وصفر والأربعين، وأرز سيلا 1121 المطلوب للولائم، مع عروض خاصة للمواكب.</p></div>
+   <div><h3>محلات المواد الغذائية</h3><p>أسعار جملة بالكيس لأصناف الرز والشاي، وطلب سريع على واتساب بدون مكالمات.</p></div>
+  </div>
+ </div>
+</section>
+
+<section class="sec quality">
+ <div class="wrap2 split">
+  <svg class="seal" viewBox="0 0 200 200" role="img" aria-label="شعار ضمان الجودة">
+   <circle cx="100" cy="100" r="92" fill="none" stroke="#E8B23A" stroke-width="3"/>
+   <circle cx="100" cy="100" r="80" fill="none" stroke="#E8B23A" stroke-width="1" stroke-dasharray="3 5"/>
+   <path d="M70 62h60v44c0 22-30 34-30 34s-30-12-30-34z" fill="#1F4E9C"/>
+   <path d="M92 70h16v62h-16z M76 70h48v12H76z" fill="#C0302A"/>
+  </svg>
+  <div>
+   <h2>ضمان الجودة</h2>
+   <p class="lead">شعار ضمان الجودة علامة شركتنا على منتجاتها، وتعتمده وكالات المطاعم في أنحاء العراق. وإذا ما عجبتك النوعية، نسترجع الكمية بشرط التجربة.</p>
+  </div>
+ </div>
+</section>
+{% endif %}
+
+{% if agency %}
+<section class="sec agency" id="agency">
+ <div class="wrap2">
+  <h2>نوّرد لسلاسل المطاعم</h2>
+  <div class="row">{% for p in agency %}<div class="a">{% if p.image_url %}<img src="{{ p.image_url }}" alt="" loading="lazy">{% endif %}<div><h3>{{ p.name }}</h3><p>{{ (p.note or '').split('.')[0] }}</p></div></div>{% endfor %}</div>
+ </div>
+</section>
+{% endif %}
+
+<section class="sec how" id="how">
+ <div class="wrap2">
+  <h2>كيف تطلب</h2>
+  <ol class="steps">
+   <li><b>اختار الأصناف والكمية</b>من هذه الصفحة، أو اكتب طلبك مباشرة على واتساب.</li>
+   <li><b>يرد عليك مساعدنا على واتساب</b>بنفس اللحظة، يأكد الكميات والعنوان ويثبّت الطلب.</li>
+   <li><b>تابع طلبك برابط</b>يوصلك رابط تشوف بيه مرحلة طلبك لحد ما توصلك الحمولة.</li>
+  </ol>
+  <a class="btn" href="https://wa.me/{{ b.phone }}?text={{ 'السلام عليكم، أريد أطلب'|urlencode }}">ابدأ الطلب على واتساب</a>
+ </div>
+</section>
+
+<section class="sec contact" id="contact">
+ <div class="wrap2 split2">
+  <div>
+   <h2>تواصل ويانا</h2>
+   <p class="lead">{{ b.address or b.city }}</p>
+  </div>
+  <ul class="ways">
+   <li><span>الطلب على واتساب</span><a href="https://wa.me/{{ b.phone }}">0{{ b.phone[3:6] }} {{ b.phone[6:9] }} {{ b.phone[9:] }}</a></li>
+   {% for ph in (b.contact_phones or '').split(',') if ph.strip() %}<li><span>{{ 'الإدارة' if loop.first else 'المبيعات' }}</span><a href="tel:+964{{ ph.strip()[1:] }}">{{ ph.strip()[:4] }} {{ ph.strip()[4:7] }} {{ ph.strip()[7:] }}</a></li>{% endfor %}
+   {% if b.facebook %}<li><span>فيسبوك</span><a href="{{ b.facebook }}" rel="noopener">صفحتنا على فيسبوك</a></li>{% endif %}
+  </ul>
+ </div>
+</section>
+<footer>© {{ b.name }}</footer>
+</div>
+
+<div class="hint" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>اسحب لتدوير الكيس</div>
+
+<div class="order" id="order" aria-live="polite">
+ <div><b id="count">0 كيس</b><small id="lines"></small></div>
+ <a class="btn" id="send" href="#">أرسل الطلب على واتساب</a>
+</div>
+
+<script>window.CHAPTERS={{ chapters|tojson }};window.WA="{{ b.phone }}";</script>
+<script src="{{ url_for('static', filename='labels.js') }}"></script>
+<script>
+// ---------------- order builder ----------------
+(()=>{const cart={},bar=document.getElementById('order');
+ const render=()=>{const ids=Object.keys(cart).filter(k=>cart[k].q>0),n=ids.reduce((s,k)=>s+cart[k].q,0);
+  bar.classList.toggle('on',n>0);document.getElementById('count').textContent=n+' كيس';
+  document.getElementById('lines').textContent=ids.map(k=>cart[k].q+' '+cart[k].short).join('، ');
+  const msg='السلام عليكم، أريد أطلب:\n'+ids.map(k=>'- '+cart[k].q+' كيس '+cart[k].name).join('\n')+'\n\nاسم المطعم/المحل: \nالمنطقة: ';
+  document.getElementById('send').href='https://wa.me/'+WA+'?text='+encodeURIComponent(msg)};
+ document.querySelectorAll('.buy').forEach(el=>{let q=10;const out=el.querySelector('output'),note=el.querySelector('.added');
+  const show=()=>out.innerHTML=q+' <small>كيس</small>';
+  el.querySelectorAll('.step button').forEach(b=>b.onclick=()=>{const d=+b.dataset.d;q=Math.max(1,Math.min(999,q+d*(q>=10&&!(d<0&&q===10)?5:1)));show()});
+  el.querySelector('.add').onclick=()=>{cart[el.dataset.id]={q,name:el.dataset.name,short:el.dataset.short};render();
+   note.textContent='انضاف '+q+' كيس للطلب';clearTimeout(el._t);el._t=setTimeout(()=>note.textContent='',2600)}})})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ---------------- scroll-driven 3D sack ----------------
+(async()=>{
+ const C=window.CHAPTERS||[],N=Math.max(C.length,1),stage=document.getElementById('stage'),light=document.getElementById('light'),still=document.getElementById('still');
+ const sections=[...document.querySelectorAll('.chapter')],railLinks=[...document.querySelectorAll('.rail a')];
+ const mobile=()=>innerWidth<=760;
+ try{await Promise.race([document.fonts.load('700 80px "Reem Kufi"'),new Promise(r=>setTimeout(r,1800))])}catch(e){}
+ const labels=C.map(c=>SackLabels.draw(c.style));
+ // scroll position -> chapter progress (0..N-1), shared by 3D and fallback
+ const hex=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+ const mix=(a,b,t)=>'#'+a.map((v,i)=>Math.round(v+(b[i]-v)*t).toString(16).padStart(2,'0')).join('');
+ function progress(){const mid=scrollY+innerHeight*.5;let p=0;
+  sections.forEach((s,i)=>{const top=s.offsetTop,h=s.offsetHeight;if(mid>=top)p=i+Math.min(1,(mid-top)/h)-.5});
+  return Math.max(0,Math.min(N-1,p))}
+ let lastIdx=-1;
+ const company=document.querySelector('.company');
+ function syncUI(p){const i=Math.round(p);document.body.classList.toggle('at-top',scrollY<innerHeight*.3);
+  document.body.classList.toggle('past',!!company&&scrollY+innerHeight*.8>company.offsetTop);
+  const a=Math.floor(p),t=p-a,g1=hex((C[a]||C[0]).glow),g2=hex((C[Math.min(a+1,N-1)]||C[0]).glow);
+  light.style.setProperty('--glow',mix(g1,g2,Math.min(1,Math.max(0,(t-.3)/.4))));
+  if(i!==lastIdx){lastIdx=i;railLinks.forEach((l,k)=>k===i?l.setAttribute('aria-current','true'):l.removeAttribute('aria-current'));
+   if(document.body.classList.contains('static'))still.src=labels[i].toDataURL('image/jpeg',.85)}}
+
+ const glOK=(()=>{try{const c=document.createElement('canvas');return !!(c.getContext('webgl')||c.getContext('experimental-webgl'))}catch(e){return false}})();
+ const weak=(navigator.deviceMemory&&navigator.deviceMemory<2)||(navigator.connection&&navigator.connection.saveData);
+ if(!window.THREE||!glOK||weak){document.body.classList.add('static');
+  const loop=()=>{syncUI(progress());requestAnimationFrame(loop)};loop();return}
+
+ const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+ const r=new THREE.WebGLRenderer({antialias:true,alpha:true});r.setPixelRatio(Math.min(devicePixelRatio||1,mobile()?1.5:2));r.outputEncoding=THREE.sRGBEncoding;
+ // cinematic response curve: without it everything reads flat and "WebGL-ish"
+ r.toneMapping=THREE.ACESFilmicToneMapping;r.toneMappingExposure=1.12;
+ stage.appendChild(r.domElement);
+ const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(28,1,.1,60);cam.position.set(0,.15,7.4);cam.lookAt(0,-.1,0);
+ // a small photo studio baked into an environment map: warm walls, two softboxes, a cool rim panel.
+ // It gives the woven plastic its sheen and soft reflections, with no image download.
+ {const env=new THREE.Scene(),room=new THREE.Mesh(new THREE.BoxGeometry(12,8,12),new THREE.MeshBasicMaterial({color:0x2a1a0c,side:THREE.BackSide}));env.add(room);
+  const panel=(w,h,c,x,y,z,ry,rx)=>{const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide}));m.position.set(x,y,z);m.rotation.set(rx||0,ry||0,0);env.add(m)};
+  panel(4,3,0xfff1d6,3.5,2.5,4,-.7);panel(3,2,0xffe2b0,-4.5,1,2,1.1);panel(6,1,0xfff6e6,0,3.9,0,0,Math.PI/2);panel(2,4,0x9fb4ff,-2,0,-5.8,0);
+  const pm=new THREE.PMREMGenerator(r);scene.environment=pm.fromScene(env,.03).texture;pm.dispose()}
+ scene.add(new THREE.HemisphereLight(0xfff1d8,0x3a2410,.35));
+ const key=new THREE.SpotLight(0xfff0d0,1.5,30,.55,.6);key.position.set(3,5,6);scene.add(key);
+ const rim=new THREE.DirectionalLight(0xffc977,.6);rim.position.set(-4,2,-3);scene.add(rim);
+ const fill=new THREE.DirectionalLight(0xffe6c0,.35);fill.position.set(-3,-1,4);scene.add(fill);
+
+ // woven sack: straight sides, full belly, sewn seams that dip in the middle, corners that poke out
+ const Wd=1.5,Ht=2.15,Dp=.72,geo=new THREE.BoxGeometry(Wd,Ht,Dp,40,56,14),P=geo.attributes.position;
+ for(let i=0;i<P.count;i++){let x=P.getX(i),y=P.getY(i),z=P.getZ(i);const s=x/(Wd/2),t=-y/(Ht/2);
+  const dip=1-s*s,top=-1+.11*dip,bot=1-.07*dip,tt=t;
+  const zone=Math.pow(Math.max(0,(Math.abs(tt)-.72)/.28),1.4);
+  const belly=Math.pow(Math.max(0,1-s*s),.5)*(1-.85*zone);
+  const nz=Math.sign(z)*(Dp/2)*(.06+.94*belly)*(1+.12*Math.max(0,tt));
+  const crease=(.03*Math.sin(s*9+tt*14)+.02*Math.sin(s*13-tt*11))*zone;
+  x*=1+.035*(1-tt*tt)+.05*Math.max(0,tt);
+  y=-(t<0?t*Math.abs(top):t*bot)*(Ht/2);
+  P.setXYZ(i,x,y,nz+(z>0?crease:-crease))}
+ geo.computeVertexNormals();
+ const tex=labels.map(c=>{const t=new THREE.CanvasTexture(c);t.encoding=THREE.sRGBEncoding;t.anisotropy=Math.min(8,r.capabilities.getMaxAnisotropy());return t});
+ const wv=document.createElement('canvas');wv.width=wv.height=128;{const g=wv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,128,128);g.globalAlpha=.16;g.fillStyle='#000';for(let i=0;i<128;i+=4){g.fillRect(i,0,1.5,128);g.fillRect(0,i,128,1)}}
+ const weaveTex=new THREE.CanvasTexture(wv);weaveTex.wrapS=weaveTex.wrapT=THREE.RepeatWrapping;weaveTex.repeat.set(10,14);
+ const mat=m=>new THREE.MeshStandardMaterial({map:m,roughness:.48,metalness:0,envMapIntensity:.9,bumpMap:weaveTex,bumpScale:.004});
+ const front=mat(tex[0]),back=mat(tex[Math.min(1,N-1)]),edge=new THREE.MeshStandardMaterial({color:0xd9c9a8,roughness:.7});
+ const sack=new THREE.Mesh(geo,[edge,edge,edge,edge,front,back]);
+ const group=new THREE.Group();group.add(sack);scene.add(group);
+ // grains at the foot + soft contact shadow
+ const GN=mobile()?180:380,grain=new THREE.InstancedMesh(new THREE.SphereGeometry(1,6,4),new THREE.MeshStandardMaterial({color:0xfbf4e2,roughness:.4}),GN);
+ {const m=new THREE.Matrix4(),q=new THREE.Quaternion(),e=new THREE.Euler();let s=11;const rnd=()=>(s=(s*16807)%2147483647)/2147483647;
+  for(let i=0;i<GN;i++){const a=rnd()*Math.PI,rd=Math.pow(rnd(),.8)*.62;e.set(rnd()*3,rnd()*3,rnd()*3);q.setFromEuler(e);
+   m.compose(new THREE.Vector3(.35+Math.cos(a)*rd*1.3,-1.1+rnd()*.08*(1-rd),.55+Math.sin(a)*rd*.5),q,new THREE.Vector3(.014,.014,.055));grain.setMatrixAt(i,m)}}
+ group.add(grain);
+ const sc=document.createElement('canvas');sc.width=sc.height=128;{const g=sc.getContext('2d'),rg=g.createRadialGradient(64,64,2,64,64,64);rg.addColorStop(0,'rgba(0,0,0,.6)');rg.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=rg;g.fillRect(0,0,128,128)}
+ const shadow=new THREE.Mesh(new THREE.PlaneGeometry(3.2,1.6),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(sc),transparent:true,depthWrite:false}));
+ shadow.rotation.x=-Math.PI/2;shadow.position.set(.1,-1.15,.1);group.add(shadow);
+
+ function size(){const w=innerWidth,h=innerHeight;r.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix();
+  if(mobile()){group.position.set(0,1.05,0);group.scale.setScalar(.62)}
+  else{const halfW=Math.tan(cam.fov*Math.PI/360)*cam.position.z*cam.aspect;group.position.set(-halfW*.42,0,0);group.scale.setScalar(1)}}
+ addEventListener('resize',size);size();
+
+ // drag to turn (horizontal only), eased back to the scroll pose
+ let drag=null,dragOff=0;
+ stage.addEventListener('pointerdown',e=>{drag={x:e.clientX,o:dragOff}});
+ addEventListener('pointermove',e=>{if(drag)dragOff=drag.o+(e.clientX-drag.x)*.01});
+ addEventListener('pointerup',()=>drag=null);addEventListener('pointercancel',()=>drag=null);
+
+ let p=progress(),t0=performance.now(),last=t0;
+ const ease=(k,dt)=>1-Math.pow(1-k,dt*60);   // same feel at 30, 60 or 144 fps
+ function frame(now){
+  const dt=Math.min(.1,(now-last)/1000);last=now;
+  const target=progress();p+=(target-p)*ease(.09,dt);syncUI(p);
+  const a=Math.floor(p+1e-4),f=Math.min(1,Math.max(0,p-a));
+  // between two chapters the sack makes one full turn; labels swap while their face is turned away
+  const spin=reduce?0:(f<.15?0:f>.85?1:(f-.15)/.7);const turn=spin<.5?2*spin*spin:1-Math.pow(-2*spin+2,2)/2;
+  const cur=Math.min(a,N-1),nxt=Math.min(a+1,N-1);
+  front.map=turn<.5?tex[cur]:tex[nxt];back.map=tex[nxt];
+  if(reduce)front.map=tex[Math.round(p)];
+  const sway=reduce?0:Math.sin((now-t0)/1000*.45)*.22;
+  if(!drag)dragOff*=1-ease(.06,dt);
+  group.rotation.y=-.35+sway+turn*Math.PI*2+dragOff;
+  group.rotation.x=.05;group.position.y+=((mobile()?1.05:0)+(reduce?0:Math.sin((now-t0)/900)*.02)-group.position.y)*ease(.2,dt);
+  if(!document.body.classList.contains('past')&&!document.hidden)r.render(scene,cam);requestAnimationFrame(frame)}
+ requestAnimationFrame(frame);
+})().catch(e=>{console.warn('3D off:',e);document.body.classList.add('static')});
+</script>
+</body></html>
